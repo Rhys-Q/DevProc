@@ -112,3 +112,7 @@ def generate(prompt: devproc.String, tokenizer: devproc.Tokenizer, torch_model: 
     decode_token = llm_tokenize_decode(decode_token, tokenizer)
     return decode_token
 ```
+
+## DevProc MVP不支持
+- 动态shape。MVP版本只支持静态shape。
+- control flow。MVP阶段只有dataflow。
