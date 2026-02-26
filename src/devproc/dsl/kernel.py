@@ -6,6 +6,7 @@ into a DevProc IR Function.
 """
 
 from typing import Any, Callable, Optional, Dict
+import torch
 from devproc.ir.function import Function
 from devproc.ir.base import Value
 from devproc.ir.types import TensorType
@@ -105,49 +106,27 @@ def kernel(func: Callable) -> Callable:
             # Get parameter names from function signature
             param_names = list(func.__code__.co_varnames[:func.__code__.co_argcount])
 
-            # Now execute the function body
-            # We need to wrap arguments in KernelTensor objects
+            # Wrap arguments in KernelTensor objects
             wrapped_args = []
             for i, param_name in enumerate(param_names):
                 if i < len(args):
                     arg = args[i]
                     if isinstance(arg, KernelTensor):
                         wrapped_args.append(arg)
+                    elif isinstance(arg, torch.Tensor):
+                        # Extract shape/dtype from torch.Tensor
+                        shape = tuple(arg.shape)
+                        dtype = str(arg.dtype).replace('torch.', '')
+                        device = "cuda" if arg.is_cuda else "cpu"
+
+                        tensor_type = TensorType(shape, dtype, device)
+                        input_op = OpBuilder.input(param_name, tensor_type)
+                        input_value = input_op.outputs[0]
+                        ctx.ir_function.add_input(input_value)
+                        ctx.param_map[param_name] = input_value
+                        wrapped_args.append(KernelTensor(input_value, param_name))
                     else:
-                        # Need to create a KernelTensor for this arg
-                        # Handle different arg types
-                        if isinstance(arg, tuple) and all(isinstance(x, int) for x in arg):
-                            # Shape tuple - create input
-                            tensor_type = TensorType(arg, "float32", "cpu")
-                            input_op = OpBuilder.input(param_name, tensor_type)
-                            input_value = input_op.outputs[0]
-                            ctx.ir_function.add_input(input_value)
-                            ctx.param_map[param_name] = input_value
-                            wrapped_args.append(KernelTensor(input_value, param_name))
-                        elif isinstance(arg, str):
-                            # String - create input
-                            tensor_type = TensorType((1,), "int8", "cpu")
-                            input_op = OpBuilder.input(param_name, tensor_type)
-                            input_value = input_op.outputs[0]
-                            ctx.ir_function.add_input(input_value)
-                            ctx.param_map[param_name] = input_value
-                            wrapped_args.append(KernelTensor(input_value, param_name))
-                        elif isinstance(arg, (int, float)):
-                            # Numeric - create scalar input
-                            tensor_type = TensorType((1,), "float32", "cpu")
-                            input_op = OpBuilder.input(param_name, tensor_type)
-                            input_value = input_op.outputs[0]
-                            ctx.ir_function.add_input(input_value)
-                            ctx.param_map[param_name] = input_value
-                            wrapped_args.append(KernelTensor(input_value, param_name))
-                        else:
-                            # Other - create placeholder
-                            tensor_type = TensorType((1,), "float32", "cpu")
-                            input_op = OpBuilder.input(param_name, tensor_type)
-                            input_value = input_op.outputs[0]
-                            ctx.ir_function.add_input(input_value)
-                            ctx.param_map[param_name] = input_value
-                            wrapped_args.append(KernelTensor(input_value, param_name))
+                        raise TypeError(f"Expected torch.Tensor, got {type(arg)}")
                 else:
                     wrapped_args.append(None)
 
@@ -165,3 +144,17 @@ def kernel(func: Callable) -> Callable:
             KernelContext._current = None
 
     return wrapper
+
+
+def parse_ir(func: Callable, *example_inputs) -> Function:
+    """
+    从 decorated function 和 example inputs 解析 IR。
+
+    Args:
+        func: @devproc.kernel 装饰的函数
+        *example_inputs: 示例输入（torch.Tensor）
+
+    Returns:
+        IR Function
+    """
+    return func(*example_inputs)

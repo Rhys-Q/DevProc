@@ -9,7 +9,7 @@ from devproc.ir.verifier import IRVerifier
 from devproc.dsl.pipeline import Pipeline, Tensor as PipelineTensor
 
 # DevProc DSL (Kernel decorator style)
-from devproc.dsl.kernel import kernel, KernelTensor
+from devproc.dsl.kernel import kernel, KernelTensor, parse_ir
 from devproc.dsl import ops as _ops
 from devproc.dsl.types import (
     String,
@@ -63,6 +63,7 @@ __all__ = [
     # DSL Kernel decorator style
     "kernel",
     "KernelTensor",
+    "parse_ir",
     # DSL Types
     "String",
     "Tensor",

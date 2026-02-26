@@ -5,6 +5,7 @@ Tests for @devproc.kernel decorator style DSL.
 import pytest
 import sys
 import os
+import torch
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -20,11 +21,14 @@ class TestKernelDecorator:
         """Test a simple kernel function."""
 
         @devproc.kernel
-        def test_func(x):
+        def test_func(x: torch.Tensor):
             return x
 
-        # Call the kernel
-        ir = test_func((10,))
+        # Example input
+        x = torch.randn(10,)
+
+        # Use parse_ir to get IR
+        ir = devproc.parse_ir(test_func, x)
 
         assert ir is not None
         print("\n" + "=" * 50)
@@ -37,14 +41,16 @@ class TestKernelDecorator:
         """Test the vision_preproc example from README."""
 
         @devproc.kernel
-        def vision_preproc(img_path):
-            img = devproc.load_image(img_path)
+        def vision_preproc(img: torch.Tensor):
             img = devproc.resize(img, (224, 224))
             img = devproc.to(img, devproc.Float32)
             return img
 
-        # Call the kernel
-        ir = vision_preproc("test.jpg")
+        # Example input
+        img = torch.randn(256, 256, 3)
+
+        # Use parse_ir to get IR
+        ir = devproc.parse_ir(vision_preproc, img)
 
         assert ir is not None
         print("\n" + "=" * 50)
@@ -57,13 +63,16 @@ class TestKernelDecorator:
         """Test normalize -> argmax pipeline."""
 
         @devproc.kernel
-        def simple_pipeline(x):
+        def simple_pipeline(x: torch.Tensor):
             y = devproc.normalize(x)
             out = devproc.argmax(y)
             return out
 
-        # Call the kernel with a tensor shape
-        ir = simple_pipeline((224, 224, 3))
+        # Example input
+        x = torch.randn(224, 224, 3)
+
+        # Use parse_ir to get IR
+        ir = devproc.parse_ir(simple_pipeline, x)
 
         # Verify
         verifier = IRVerifier(ir)
@@ -84,24 +93,28 @@ class TestKernelDecorator:
         """Test MLP: linear -> relu -> linear -> argmax."""
 
         @devproc.kernel
-        def mlp(x):
+        def mlp(x: torch.Tensor, w1: torch.Tensor, b1: torch.Tensor,
+                w2: torch.Tensor, b2: torch.Tensor):
             # First layer
-            w1 = devproc.input("w1", "float32", (256, 128))
-            b1 = devproc.input("b1", "float32", (256,))
             h = devproc.linear(x, w1, b1)
             h = devproc.relu(h)
 
             # Second layer
-            w2 = devproc.input("w2", "float32", (10, 256))
-            b2 = devproc.input("b2", "float32", (10,))
             out = devproc.linear(h, w2, b2)
 
             # Argmax
             result = devproc.argmax(out)
             return result
 
-        # Call with input shape
-        ir = mlp((1, 128))
+        # Example inputs
+        x = torch.randn(1, 128)
+        w1 = torch.randn(256, 128)
+        b1 = torch.randn(256,)
+        w2 = torch.randn(10, 256)
+        b2 = torch.randn(10,)
+
+        # Use parse_ir to get IR
+        ir = devproc.parse_ir(mlp, x, w1, b1, w2, b2)
 
         # Verify
         verifier = IRVerifier(ir)
