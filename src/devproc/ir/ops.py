@@ -207,3 +207,148 @@ class OpBuilder:
             Op with no outputs
         """
         return Op("return", [value], [])
+
+    @staticmethod
+    def resize(input_value: Value, size: Tuple[int, ...]) -> Op:
+        """
+        Create a resize operation.
+
+        Args:
+            input_value: Input tensor value
+            size: Target size (e.g., (224, 224))
+
+        Returns:
+            Op with resized output
+        """
+        input_type = input_value.type
+        if not isinstance(input_type, TensorType):
+            raise TypeError(f"resize requires TensorType, got {type(input_type)}")
+
+        # Output shape: for 2D images, height x width
+        # For 3D (HWC), becomes H x W x C
+        if len(input_type.shape) == 3 and len(size) == 2:
+            # HWC -> HWC (resize H, W)
+            output_shape = (*size, input_type.shape[2])
+        else:
+            output_shape = size
+
+        output_type = TensorType(
+            shape=output_shape,
+            dtype=input_type.dtype,
+            device=input_type.device
+        )
+        output_value = Value(Function.generate_name(), output_type)
+
+        op = Op("resize", [input_value], [output_value])
+        op._size = size
+        return op
+
+    @staticmethod
+    def transpose(input_value: Value, dims: Tuple[int, ...]) -> Op:
+        """
+        Create a transpose operation.
+
+        Args:
+            input_value: Input tensor value
+            dims: Permutation of dimensions
+
+        Returns:
+            Op with transposed output
+        """
+        input_type = input_value.type
+        if not isinstance(input_type, TensorType):
+            raise TypeError(f"transpose requires TensorType, got {type(input_type)}")
+
+        # Compute output shape based on permutation
+        original_shape = input_type.shape
+        output_shape = tuple(original_shape[d] for d in dims)
+
+        output_type = TensorType(
+            shape=output_shape,
+            dtype=input_type.dtype,
+            device=input_type.device
+        )
+        output_value = Value(Function.generate_name(), output_type)
+
+        op = Op("transpose", [input_value], [output_value])
+        op._dims = dims
+        return op
+
+    @staticmethod
+    def to(input_value: Value, dtype: str, device: Optional[str] = None) -> Op:
+        """
+        Create a type/device conversion operation.
+
+        Args:
+            input_value: Input tensor value
+            dtype: Target dtype
+            device: Target device (optional)
+
+        Returns:
+            Op with converted output
+        """
+        input_type = input_value.type
+        if not isinstance(input_type, TensorType):
+            raise TypeError(f"to requires TensorType, got {type(input_type)}")
+
+        output_device = device if device else input_type.device
+
+        output_type = TensorType(
+            shape=input_type.shape,
+            dtype=dtype,
+            device=output_device
+        )
+        output_value = Value(Function.generate_name(), output_type)
+        return Op("to", [input_value], [output_value])
+
+    @staticmethod
+    def sigmoid(input_value: Value) -> Op:
+        """
+        Create a sigmoid activation operation.
+
+        Args:
+            input_value: Input tensor
+
+        Returns:
+            Op with sigmoid output (same shape/dtype as input)
+        """
+        input_type = input_value.type
+        if not isinstance(input_type, TensorType):
+            raise TypeError(f"sigmoid requires TensorType, got {type(input_type)}")
+
+        # Sigmoid typically outputs float32
+        output_type = TensorType(
+            shape=input_type.shape,
+            dtype="float32",
+            device=input_type.device
+        )
+        output_value = Value(Function.generate_name(), output_type)
+        return Op("sigmoid", [input_value], [output_value])
+
+    @staticmethod
+    def softmax(input_value: Value, dim: int = -1) -> Op:
+        """
+        Create a softmax activation operation.
+
+        Args:
+            input_value: Input tensor
+            dim: Dimension to apply softmax
+
+        Returns:
+            Op with softmax output (same shape as input)
+        """
+        input_type = input_value.type
+        if not isinstance(input_type, TensorType):
+            raise TypeError(f"softmax requires TensorType, got {type(input_type)}")
+
+        # Softmax typically outputs float32
+        output_type = TensorType(
+            shape=input_type.shape,
+            dtype="float32",
+            device=input_type.device
+        )
+        output_value = Value(Function.generate_name(), output_type)
+
+        op = Op("softmax", [input_value], [output_value])
+        op._dim = dim
+        return op

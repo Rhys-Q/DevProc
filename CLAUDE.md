@@ -18,8 +18,15 @@ src/devproc/
 │   ├── function.py       # Function and Block classes
 │   ├── ops.py            # OpBuilder for creating IR operations
 │   └── verifier.py       # IRVerifier for validation
+├── dsl/                   # DSL (Domain Specific Language)
+│   ├── pipeline.py       # Pipeline class for DSL
+│   ├── kernel.py        # @devproc.kernel decorator
+│   ├── ops.py           # Module-level devproc functions
+│   └── types.py         # DSL type annotations
 └── tests/
-    └── test_ir.py        # IR tests
+    ├── test_ir.py        # IR tests
+    ├── test_dsl.py       # Pipeline-style DSL tests
+    └── test_kernel.py    # @kernel decorator tests
 ```
 
 ## Running Tests
@@ -28,8 +35,11 @@ src/devproc/
 # Run all tests
 pytest src/devproc/tests/ -v
 
-# Run a single test file
+# Run IR tests
 pytest src/devproc/tests/test_ir.py -v
+
+# Run DSL tests
+pytest src/devproc/tests/test_dsl.py -v
 ```
 
 ## Code Architecture
@@ -60,6 +70,51 @@ Supported devices: `cpu`, `cuda`
 - `relu`: ReLU activation
 - `add`: Element-wise addition
 - `return`: Return operation
+- `resize`: Resize tensor
+- `transpose`: Transpose tensor
+- `to`: Type/device conversion
+- `sigmoid`: Sigmoid activation
+- `softmax`: Softmax activation
+
+### DSL Layer
+
+The DSL provides two ways to build IR pipelines:
+
+**1. Pipeline style:**
+```python
+from devproc import Pipeline
+
+pipe = Pipeline()
+img = pipe.input("image", "uint8", (224, 224, 3))
+x = pipe.normalize(img)
+out = pipe.argmax(x)
+pipe.output(out)
+
+# Build IR
+ir_func = pipe.build()
+```
+
+**2. @kernel decorator style (recommended):**
+```python
+import devproc
+
+@devproc.kernel
+def vision_preproc(img_path):
+    img = devproc.load_image(img_path)
+    img = devproc.resize(img, (224, 224))
+    img = devproc.to(img, devproc.Float32)
+    return img
+
+# Build IR
+ir = vision_preproc("test.jpg")
+```
+
+Key constraint: DSL does NOT execute any computation - it only constructs IR nodes.
+
+Available module-level functions:
+- `load_image`, `input`, `resize`, `transpose`, `to`, `normalize`
+- `matmul`, `linear`, `relu`, `sigmoid`, `softmax`, `add`
+- `argmax`, `load_torch_model`, `load_tokenizer`, `tokenize_encode`, `tokenize_decode`
 
 ### IR Verification
 
