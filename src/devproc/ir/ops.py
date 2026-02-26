@@ -299,7 +299,11 @@ class OpBuilder:
             device=output_device
         )
         output_value = Value(Function.generate_name(), output_type)
-        return Op("to", [input_value], [output_value])
+        op = Op("to", [input_value], [output_value])
+        # Store dtype/device for type inference
+        op._dtype = dtype
+        op._device = output_device
+        return op
 
     @staticmethod
     def sigmoid(input_value: Value) -> Op:

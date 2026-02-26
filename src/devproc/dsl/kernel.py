@@ -6,7 +6,10 @@ into a DevProc IR Function.
 """
 
 from typing import Any, Callable, Optional, Dict
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None
 from devproc.ir.function import Function
 from devproc.ir.base import Value
 from devproc.ir.types import TensorType

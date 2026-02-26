@@ -110,7 +110,7 @@ class Op:
 
     def __repr__(self) -> str:
         inputs_str = ", ".join(v.name for v in self.inputs)
-        outputs_str = ", ".join(v.name for v in self.outputs)
+        outputs_str = ", ".join(f"{v.name} : {repr(v.type)}" for v in self.outputs)
         return f"{outputs_str} = {self.name}({inputs_str})"
 
     def __str__(self) -> str:

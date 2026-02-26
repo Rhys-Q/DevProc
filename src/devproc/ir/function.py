@@ -112,6 +112,19 @@ class Function:
         # Then check block
         return self._block.get_value(name)
 
+    def infer_types(self) -> Dict[Value, Type]:
+        """Infer types for all values in this function.
+
+        Runs type inference to propagate types from inputs through
+        the IR graph.
+
+        Returns:
+            Dict mapping each Value to its inferred type.
+        """
+        from devproc.ir.type_infer import TypeInferencer
+        inferrer = TypeInferencer(self)
+        return inferrer.infer()
+
     @staticmethod
     def generate_name(prefix: str = "v") -> str:
         """Generate a unique name for a value."""
@@ -136,7 +149,7 @@ class Function:
 
         # Print output
         if self._output:
-            lines.append(f"  return {self._output.name}")
+            lines.append(f"  return {self._output.name} : {repr(self._output.type)}")
         else:
             lines.append("  return (none)")
 
