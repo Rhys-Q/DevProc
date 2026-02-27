@@ -8,7 +8,7 @@ import pytest
 import torch
 
 import devproc
-from devproc.backend.triton import TritonCompiler, TritonRuntime
+from devproc import compile, Runtime
 
 
 def cuda_available():
@@ -27,7 +27,9 @@ def triton_available():
 
 
 requires_cuda = pytest.mark.skipif(not cuda_available(), reason="CUDA not available")
-requires_triton = pytest.mark.skipif(not triton_available(), reason="Triton not available")
+requires_triton = pytest.mark.skipif(
+    not triton_available(), reason="Triton not available"
+)
 
 
 class TestTritonBackend:
@@ -195,9 +197,10 @@ class TestTritonBackend:
 
     @requires_cuda
     @requires_triton
-    @pytest.mark.skip(reason="depends on linear kernel which has issue")
+    # @pytest.mark.skip(reason="depends on linear kernel which has issue")
     def test_mlp_pipeline(self):
         """Test complete MLP pipeline."""
+
         # Define kernel
         @devproc.kernel
         def mlp(x, w1, b1, w2, b2):
@@ -206,15 +209,20 @@ class TestTritonBackend:
             out = devproc.linear(h, w2, b2)
             return out
 
-        # Create runtime
-        runtime = TritonRuntime.from_kernel(
+        # AOT compile
+        compiled = compile(
             mlp,
             torch.randn(1, 128),
             torch.randn(256, 128),
             torch.randn(256),
             torch.randn(10, 256),
             torch.randn(10),
+            backend="triton",
+            device_id=0,
         )
+
+        # Create runtime
+        rt = Runtime(compiled, device_id=0)
 
         # Run on GPU
         x = torch.randn(1, 128).cuda()
@@ -223,13 +231,16 @@ class TestTritonBackend:
         w2 = torch.randn(10, 256).cuda()
         b2 = torch.randn(10).cuda()
 
-        result = runtime(x=x, w1=w1, b1=b1, w2=w2, b2=b2)
+        result = rt(x=x, w1=w1, b1=b1, w2=w2, b2=b2)
 
         # Verify with PyTorch
-        expected = torch.matmul(
-            torch.relu(torch.matmul(x.float(), w1.float().T) + b1.float()),
-            w2.float().T
-        ) + b2.float()
+        expected = (
+            torch.matmul(
+                torch.relu(torch.matmul(x.float(), w1.float().T) + b1.float()),
+                w2.float().T,
+            )
+            + b2.float()
+        )
 
         assert torch.allclose(result[0], expected, atol=1e-1)
 
@@ -237,6 +248,8 @@ class TestTritonBackend:
     @requires_triton
     def test_compiler_available(self):
         """Test that compiler reports availability."""
+        from devproc.backend.triton import TritonCompiler
+
         compiler = TritonCompiler()
         assert compiler.is_available()
 

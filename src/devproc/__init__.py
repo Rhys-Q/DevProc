@@ -49,6 +49,42 @@ decode = _ops.decode
 # DevProc Backend (Triton GPU)
 from devproc.backend.triton import TritonCompiler, TritonRuntime, TritonCompiledProgram
 
+# DevProc Runtime
+from devproc.runtime import Runtime
+
+# DevProc compile function
+def compile(target, *example_inputs, backend: str = "triton", **kwargs):
+    """AOT 编译函数
+
+    Args:
+        target: IR Function 或 @kernel 装饰的函数
+        *example_inputs: 示例输入（用于解析 IR）
+        backend: 目标后端 ("triton")
+        **kwargs: 后端特定配置（如 device_id）
+
+    Returns:
+        CompiledProgram 对象
+    """
+    # 获取 IR Function
+    ir_function = None
+
+    if hasattr(target, 'ir_function'):
+        # Kernel 函数对象（需要先获取 example_inputs）
+        ir_function = target.ir_function
+    elif isinstance(target, Function):
+        # 直接是 IR Function
+        ir_function = target
+    else:
+        # 可能是普通函数，需要用 example_inputs 解析
+        ir_function = target(*example_inputs)
+
+    # 根据 backend 选择编译器
+    if backend == "triton":
+        from devproc.backend.triton import TritonCompiler as _TritonCompiler
+        compiler = _TritonCompiler(**kwargs)
+        return compiler.compile(ir_function)
+    raise ValueError(f"Unknown backend: {backend}")
+
 __all__ = [
     # IR
     "Type",
@@ -103,4 +139,7 @@ __all__ = [
     "TritonCompiler",
     "TritonRuntime",
     "TritonCompiledProgram",
+    # Runtime and compile
+    "Runtime",
+    "compile",
 ]

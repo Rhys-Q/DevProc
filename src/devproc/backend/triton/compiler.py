@@ -98,6 +98,27 @@ class TritonCompiledProgram(CompiledProgram):
 
         return outputs
 
+    def export(self, path: str) -> None:
+        """Export the compiled program to a .so file.
+
+        Args:
+            path: Path to export the .so file.
+        """
+        raise NotImplementedError(".so export not implemented yet")
+
+    @staticmethod
+    def load(path: str, device_id: int = 0) -> "TritonCompiledProgram":
+        """Load a compiled program from a .so file.
+
+        Args:
+            path: Path to the .so file.
+            device_id: CUDA device ID.
+
+        Returns:
+            Loaded TritonCompiledProgram instance.
+        """
+        raise NotImplementedError(".so load not implemented yet")
+
 
 class TritonCompiler(Backend):
     """Triton backend compiler."""
@@ -225,31 +246,6 @@ class TritonRuntime:
                 inputs[name] = tensor.to(f"cuda:{self.device_id}")
 
         return self.compiled_program.run(**inputs)
-
-    @staticmethod
-    def from_kernel(kernel_func, *example_inputs, device_id: int = 0) -> "TritonRuntime":
-        """Create a TritonRuntime from a @kernel decorated function.
-
-        This is a convenience function that:
-        1. Runs the kernel function with example inputs to get IR
-        2. Builds the TritonRuntime from the IR
-
-        Args:
-            kernel_func: The kernel function.
-            example_inputs: Example inputs to trace IR.
-            device_id: CUDA device ID.
-
-        Returns:
-            TritonRuntime instance.
-        """
-        # Run kernel to get IR
-        ir_function = kernel_func(*example_inputs)
-
-        # Create runtime
-        runtime = TritonRuntime(device_id)
-        runtime.build(ir_function)
-
-        return runtime
 
 
 # Convenience function for quick usage

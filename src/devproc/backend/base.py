@@ -55,6 +55,29 @@ class CompiledProgram(ABC):
         """
         pass
 
+    @abstractmethod
+    def export(self, path: str) -> None:
+        """Export the compiled program to a .so file.
+
+        Args:
+            path: Path to export the .so file.
+        """
+        pass
+
+    @staticmethod
+    @abstractmethod
+    def load(path: str, device_id: int = 0) -> "CompiledProgram":
+        """Load a compiled program from a .so file.
+
+        Args:
+            path: Path to the .so file.
+            device_id: CUDA device ID.
+
+        Returns:
+            Loaded CompiledProgram instance.
+        """
+        pass
+
 
 class LoweringContext:
     """Context for lowering IR operations to backend-specific operations."""
