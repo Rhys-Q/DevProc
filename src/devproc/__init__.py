@@ -46,6 +46,9 @@ tokenize_decode = _ops.tokenize_decode
 prefill = _ops.prefill
 decode = _ops.decode
 
+# DevProc Backend (Triton GPU)
+from devproc.backend.triton import TritonCompiler, TritonRuntime, TritonCompiledProgram
+
 __all__ = [
     # IR
     "Type",
@@ -96,4 +99,8 @@ __all__ = [
     "tokenize_decode",
     "prefill",
     "decode",
+    # Backend
+    "TritonCompiler",
+    "TritonRuntime",
+    "TritonCompiledProgram",
 ]
