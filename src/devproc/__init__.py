@@ -39,12 +39,6 @@ sigmoid = _ops.sigmoid
 softmax = _ops.softmax
 add = _ops.add
 argmax = _ops.argmax
-load_torch_model = _ops.load_torch_model
-load_tokenizer = _ops.load_tokenizer
-tokenize_encode = _ops.tokenize_encode
-tokenize_decode = _ops.tokenize_decode
-prefill = _ops.prefill
-decode = _ops.decode
 
 # DevProc Backend (Triton GPU)
 from devproc.backend.triton import TritonCompiler, TritonRuntime, TritonCompiledProgram
@@ -129,12 +123,6 @@ __all__ = [
     "softmax",
     "add",
     "argmax",
-    "load_torch_model",
-    "load_tokenizer",
-    "tokenize_encode",
-    "tokenize_decode",
-    "prefill",
-    "decode",
     # Backend
     "TritonCompiler",
     "TritonRuntime",

@@ -108,10 +108,30 @@ class Op:
         # This is called by Value constructor
         pass
 
+    def _get_attrs_str(self) -> str:
+        """Get attribute string for the op (only user-defined attrs)."""
+        # Only show specific known attributes
+        known_attrs = []
+        if hasattr(self, '_size'):
+            known_attrs.append(f"size={self._size}")
+        if hasattr(self, '_dims'):
+            known_attrs.append(f"dims={self._dims}")
+        if hasattr(self, '_dtype'):
+            known_attrs.append(f"dtype={self._dtype}")
+        if hasattr(self, '_device'):
+            known_attrs.append(f"device={self._device}")
+        if hasattr(self, '_dim'):
+            known_attrs.append(f"dim={self._dim}")
+
+        if known_attrs:
+            return f"[{', '.join(known_attrs)}]"
+        return ""
+
     def __repr__(self) -> str:
         inputs_str = ", ".join(v.name for v in self.inputs)
         outputs_str = ", ".join(f"{v.name} : {repr(v.type)}" for v in self.outputs)
-        return f"{outputs_str} = {self.name}({inputs_str})"
+        attrs_str = self._get_attrs_str()
+        return f"{outputs_str} = {self.name}{attrs_str}({inputs_str})"
 
     def __str__(self) -> str:
         return self.__repr__()

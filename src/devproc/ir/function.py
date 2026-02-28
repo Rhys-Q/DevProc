@@ -4,7 +4,6 @@ Function and Block classes for DevProc IR.
 
 from typing import List, Optional, Dict
 from devproc.ir.base import Value, Op
-from devproc.ir.types import Type
 
 
 class Block:
@@ -111,19 +110,6 @@ class Function:
                 return input_val
         # Then check block
         return self._block.get_value(name)
-
-    def infer_types(self) -> Dict[Value, Type]:
-        """Infer types for all values in this function.
-
-        Runs type inference to propagate types from inputs through
-        the IR graph.
-
-        Returns:
-            Dict mapping each Value to its inferred type.
-        """
-        from devproc.ir.type_infer import TypeInferencer
-        inferrer = TypeInferencer(self)
-        return inferrer.infer()
 
     @staticmethod
     def generate_name(prefix: str = "v") -> str:

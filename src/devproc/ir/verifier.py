@@ -12,7 +12,6 @@ from typing import List, Set
 from devproc.ir.function import Function
 from devproc.ir.base import Op, Value
 from devproc.ir.types import TensorType, ScalarType
-from devproc.ir.type_infer import TypeInferencer
 
 
 class IRVerifier:
@@ -48,7 +47,6 @@ class IRVerifier:
         self._check_ssa()
         self._check_def_use()
         self._check_types()
-        self._check_types_inferred()
         self._check_devices()
 
         return len(self.errors) == 0
@@ -201,34 +199,6 @@ class IRVerifier:
                         self.errors.append(
                             f"Invalid device '{output.type.device}' for value '{output.name}'"
                         )
-
-    def _check_types_inferred(self) -> None:
-        """Check type consistency using type inference.
-
-        This uses the TypeInferencer to verify that declared types
-        match what would be inferred from the IR graph.
-        """
-        inferrer = TypeInferencer(self.function)
-        inferred = inferrer.infer()
-
-        # Check each output value
-        for op in self.function.block.ops:
-            for out in op.outputs:
-                declared = out.type
-                if out in inferred:
-                    inferred_type = inferred[out]
-                    if declared != inferred_type:
-                        self.errors.append(
-                            f"Type mismatch for '{out.name}': "
-                            f"declared {declared}, inferred {inferred_type}"
-                        )
-
-        # Report conflicts detected during inference
-        for value, declared, inferred_type in inferrer.conflicts:
-            self.errors.append(
-                f"Type conflict for '{value.name}': "
-                f"declared {declared}, inferred {inferred_type}"
-            )
 
     def get_errors(self) -> List[str]:
         """Get list of verification errors."""

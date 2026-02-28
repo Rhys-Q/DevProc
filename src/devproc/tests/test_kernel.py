@@ -115,8 +115,6 @@ class TestKernelDecorator:
 
         # Use parse_ir to get IR
         ir = devproc.parse_ir(mlp, x, w1, b1, w2, b2)
-        ir.infer_types()
-        breakpoint()
 
         # Verify
         verifier = IRVerifier(ir)
