@@ -43,6 +43,9 @@ argmax = _ops.argmax
 # DevProc Backend (Triton GPU)
 from devproc.backend.triton import TritonCompiler, TritonRuntime, TritonCompiledProgram
 
+# Torch FX Frontend
+from devproc.ir.from_torch import from_torch
+
 # DevProc Runtime
 from devproc.runtime import Runtime
 
@@ -165,4 +168,6 @@ __all__ = [
     "compile",
     "save",
     "load",
+    # Torch FX Frontend
+    "from_torch",
 ]
