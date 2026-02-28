@@ -6,6 +6,8 @@ Compiles IR to Triton kernels and executes them.
 
 from typing import Dict, Any, List, Optional
 import torch
+import json
+import logging
 
 from devproc.ir.function import Function
 from devproc.ir.base import Op, Value
@@ -13,10 +15,13 @@ from devproc.ir.types import TensorType
 from devproc.backend.base import Backend, CompiledProgram
 from devproc.backend.triton.memory import GPUMemoryPool, TensorManager
 from devproc.backend.triton.ops import TritonLoweringContext
+from devproc.backend.triton.codegen import TritonKernelSpec
+
+logger = logging.getLogger(__name__)
 
 
 class TritonCompiledProgram(CompiledProgram):
-    """Compiled Triton program."""
+    """Compiled Triton program with AOT support."""
 
     def __init__(
         self,
@@ -24,6 +29,8 @@ class TritonCompiledProgram(CompiledProgram):
         kernels: List[Any],
         tensor_allocations: Dict[str, Any],
         device_id: int = 0,
+        aot_kernels: Optional[List[Any]] = None,
+        launcher: Optional[Any] = None,
     ):
         """Initialize the compiled program.
 
@@ -32,11 +39,15 @@ class TritonCompiledProgram(CompiledProgram):
             kernels: List of kernel specifications.
             tensor_allocations: Tensor allocation info.
             device_id: CUDA device ID.
+            aot_kernels: List of AOT compiled kernels (optional).
+            launcher: Kernel launcher instance (optional).
         """
         self.ir_function = ir_function
         self.kernels = kernels
         self.tensor_allocations = tensor_allocations
         self.device_id = device_id
+        self.aot_kernels = aot_kernels or []
+        self.launcher = launcher
         self.memory_pool = GPUMemoryPool(device_id)
         self.tensor_manager = TensorManager(self.memory_pool)
 
@@ -49,6 +60,95 @@ class TritonCompiledProgram(CompiledProgram):
         Returns:
             List of output tensors.
         """
+        # Try AOT execution first if launcher is available
+        if self.launcher is not None and self.aot_kernels:
+            return self._run_aot(**kwargs)
+
+        # Fallback to JIT execution
+        return self._run_jit(**kwargs)
+
+    def _run_aot(self, **kwargs) -> List[torch.Tensor]:
+        """Execute using AOT compiled kernels with CUDA Driver API."""
+        from devproc.backend.triton.runtime import KernelLauncher
+
+        if self.launcher is None:
+            self.launcher = KernelLauncher(self.device_id)
+
+            # Register all AOT kernels
+            for aot_kernel in self.aot_kernels:
+                if aot_kernel.cubin:
+                    self.launcher.register_kernel(
+                        name=aot_kernel.name,
+                        cubin=aot_kernel.cubin,
+                        grid=aot_kernel.grid,
+                        block=aot_kernel.block,
+                        num_warps=aot_kernel.num_warps,
+                        num_stages=aot_kernel.num_stages,
+                    )
+
+        # Prepare inputs
+        inputs = {}
+        for name, tensor in kwargs.items():
+            if tensor.is_cuda:
+                inputs[name] = tensor
+            else:
+                inputs[name] = tensor.to(f"cuda:{self.device_id}")
+
+        # Register input tensors
+        input_ptrs = {}
+        for name, tensor in inputs.items():
+            ptr, size = self.launcher.allocate_from_tensor(name, tensor)
+            input_ptrs[name] = (ptr, size)
+
+        # Allocate output tensors
+        output_tensors = {}
+        output_ptrs = {}
+        for name, (shape, dtype_str) in self.tensor_allocations.items():
+            dtype = self._str_to_dtype(dtype_str)
+            tensor = torch.empty(shape, dtype=dtype, device="cuda")
+            output_tensors[name] = tensor
+            ptr, size = self.launcher.allocate_from_tensor(name, tensor)
+            output_ptrs[name] = (ptr, size)
+
+        # Execute kernels
+        for aot_kernel in self.aot_kernels:
+            # Build kernel arguments
+            args = []
+
+            # Add input arguments
+            for param_name, _ in aot_kernel.signature:
+                if param_name in input_ptrs:
+                    args.append(input_ptrs[param_name])
+                elif param_name in output_ptrs:
+                    args.append(output_ptrs[param_name])
+
+            # Launch kernel
+            try:
+                self.launcher.launch(
+                    aot_kernel.name,
+                    grid=aot_kernel.grid,
+                    block=aot_kernel.block,
+                    args=args,
+                )
+            except Exception as e:
+                logger.warning(f"AOT kernel launch failed for {aot_kernel.name}, trying JIT: {e}")
+                # Fallback to JIT if AOT fails
+                return self._run_jit(**kwargs)
+
+        # Synchronize
+        self.launcher.synchronize()
+
+        # Collect outputs
+        output_names = [out.name for out in self.ir_function.block.ops[-1].outputs]
+        outputs = []
+        for name in output_names:
+            if name in output_tensors:
+                outputs.append(output_tensors[name].cpu())
+
+        return outputs
+
+    def _run_jit(self, **kwargs) -> List[torch.Tensor]:
+        """Execute using JIT compiled kernels (fallback)."""
         # Prepare input tensors
         inputs = {}
         for name, tensor in kwargs.items():
@@ -60,23 +160,23 @@ class TritonCompiledProgram(CompiledProgram):
         # Allocate and copy inputs
         ctx = TritonLoweringContext(self.device_id)
 
-        for input_param in self.ir_function.inputs:
-            param_name = input_param.name
-            if param_name in inputs:
-                tensor = inputs[param_name]
-            else:
-                # Use default tensor from kwargs if name doesn't match
-                # Try to find by position
-                continue
+        # Map IR function inputs to kwargs
+        if self.ir_function:
+            for input_param in self.ir_function.inputs:
+                param_name = input_param.name
+                if param_name in inputs:
+                    tensor = inputs[param_name]
+                else:
+                    continue
 
-            # Allocate GPU tensor
-            gpu_tensor = self.tensor_manager.allocate_output(
-                param_name,
-                tensor.shape,
-                TensorManager.convertTorchToStr(tensor.dtype),
-            )
-            gpu_tensor.copy_(tensor)
-            ctx.set_tensor(param_name, gpu_tensor)
+                # Allocate GPU tensor
+                gpu_tensor = self.tensor_manager.allocate_output(
+                    param_name,
+                    tensor.shape,
+                    TensorManager.convertTorchToStr(tensor.dtype),
+                )
+                gpu_tensor.copy_(tensor)
+                ctx.set_tensor(param_name, gpu_tensor)
 
         # Allocate output tensors
         for name, (shape, dtype) in self.tensor_allocations.items():
@@ -84,12 +184,18 @@ class TritonCompiledProgram(CompiledProgram):
                 output_tensor = self.tensor_manager.allocate_output(name, shape, dtype)
                 ctx.set_tensor(name, output_tensor)
 
-        # Execute kernels in order
-        for kernel in self.kernels:
-            kernel.kernel_fn()
+        # Execute kernels using handlers at runtime
+        if self.ir_function:
+            for op in self.ir_function.block.ops:
+                self._execute_op_jit(op, ctx)
 
         # Collect outputs
-        output_names = [out.name for out in self.ir_function.block.ops[-1].outputs]
+        if self.ir_function and self.ir_function.block.ops:
+            last_op = self.ir_function.block.ops[-1]
+            output_names = [out.name for out in last_op.outputs]
+        else:
+            output_names = list(self.tensor_allocations.keys())
+
         outputs = []
         for name in output_names:
             tensor = ctx.get_tensor(name)
@@ -98,26 +204,138 @@ class TritonCompiledProgram(CompiledProgram):
 
         return outputs
 
+    def _execute_op_jit(self, op: Op, ctx) -> None:
+        """Execute a single operation using JIT."""
+        from devproc.backend.triton.ops import (
+            handle_normalize,
+            handle_relu,
+            handle_sigmoid,
+            handle_softmax,
+            handle_argmax,
+            handle_matmul,
+            handle_linear,
+            handle_add,
+            handle_to,
+            handle_resize,
+            handle_transpose,
+        )
+
+        handlers = {
+            "normalize": handle_normalize,
+            "relu": handle_relu,
+            "sigmoid": handle_sigmoid,
+            "softmax": handle_softmax,
+            "argmax": handle_argmax,
+            "matmul": handle_matmul,
+            "linear": handle_linear,
+            "add": handle_add,
+            "to": handle_to,
+            "resize": handle_resize,
+            "transpose": handle_transpose,
+        }
+
+        handler = handlers.get(op.name)
+        if handler is None:
+            logger.warning(f"No handler for op: {op.name}")
+            return
+
+        try:
+            spec = handler(op, ctx, self.device_id)
+            # The handler registers the kernel in ctx
+            # Execute any registered kernels
+            if hasattr(ctx, 'kernel_specs'):
+                for kernel_spec in ctx.kernel_specs:
+                    if kernel_spec.kernel_fn is not None:
+                        kernel_spec.kernel_fn()
+        except Exception as e:
+            logger.warning(f"JIT execution failed for {op.name}: {e}")
+            raise
+
+    def _str_to_dtype(self, dtype_str: str) -> torch.dtype:
+        """Convert string dtype to torch dtype."""
+        dtype_map = {
+            "float32": torch.float32,
+            "float16": torch.float16,
+            "float64": torch.float64,
+            "int32": torch.int32,
+            "int64": torch.int64,
+            "int16": torch.int16,
+            "int8": torch.int8,
+            "uint8": torch.uint8,
+            "bool": torch.bool,
+        }
+        return dtype_map.get(dtype_str, torch.float32)
+
     def export(self, path: str) -> None:
-        """Export the compiled program to a .so file.
+        """Export the compiled program to files.
 
         Args:
-            path: Path to export the .so file.
+            path: Base path for export (will create path.cubin and path.meta.json)
         """
-        raise NotImplementedError(".so export not implemented yet")
+        from devproc.backend.triton.serialization import SerializationManager
+
+        # Export using serialization manager
+        SerializationManager.export(
+            kernels=self.aot_kernels,
+            output_path=path,
+            tensor_allocations=self.tensor_allocations,
+            device_id=self.device_id,
+        )
+
+        logger.info(f"Exported compiled program to {path}")
 
     @staticmethod
     def load(path: str, device_id: int = 0) -> "TritonCompiledProgram":
-        """Load a compiled program from a .so file.
+        """Load a compiled program from files.
 
         Args:
-            path: Path to the .so file.
+            path: Base path for the compiled program
             device_id: CUDA device ID.
 
         Returns:
             Loaded TritonCompiledProgram instance.
         """
-        raise NotImplementedError(".so load not implemented yet")
+        from devproc.backend.triton.serialization import SerializationManager
+        from devproc.backend.triton.runtime import KernelLauncher
+
+        # Load kernels and metadata
+        kernels, metadata = SerializationManager.load(path, device_id=device_id)
+
+        # Reconstruct tensor allocations
+        tensor_allocations = {}
+        for name, info in metadata.tensor_allocations.items():
+            tensor_allocations[name] = (tuple(info["shape"]), info["dtype"])
+
+        # Create launcher and register kernels
+        launcher = None
+        if kernels:
+            try:
+                launcher = KernelLauncher(device_id)
+                for kernel in kernels:
+                    if kernel.cubin:
+                        launcher.register_kernel(
+                            name=kernel.name,
+                            cubin=kernel.cubin,
+                            grid=kernel.grid,
+                            block=kernel.block,
+                            num_warps=kernel.num_warps,
+                            num_stages=kernel.num_stages,
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to create launcher: {e}")
+
+        # Create compiled program
+        program = TritonCompiledProgram(
+            ir_function=None,  # IR not preserved in load
+            kernels=kernels,
+            tensor_allocations=tensor_allocations,
+            device_id=device_id,
+            aot_kernels=kernels,
+            launcher=launcher,
+        )
+
+        logger.info(f"Loaded compiled program from {path}")
+        return program
 
 
 class TritonCompiler(Backend):
@@ -153,24 +371,31 @@ class TritonCompiler(Backend):
         Returns:
             Compiled Triton program.
         """
-        # Analyze IR and generate kernels
+        # Import AOT compiler
+        from devproc.backend.triton.aot import AOTCompiler, AOTCompiledKernel
+        from devproc.backend.triton.codegen import TritonKernelSpec
+
+        # Try AOT compilation first
+        aot_kernels = []
+        try:
+            aot_compiler = AOTCompiler(self.device_id)
+            aot_kernels = aot_compiler.compile_function(ir_function)
+            logger.info(f"AOT compiled {len(aot_kernels)} kernels")
+        except Exception as e:
+            logger.warning(f"AOT compilation failed: {e}")
+            aot_kernels = []
+
+        # Analyze IR and generate kernels (for JIT fallback)
         kernels = []
         tensor_allocations = {}
 
         # Track value names to output values
         output_values = {}
 
-        # Process each operation
+        # Process each operation - just collect metadata for now
+        # Kernel execution (JIT) will be done at runtime
         for op in ir_function.block.ops:
-            # Get or create lowering context
-            ctx = TritonLoweringContext(self.device_id)
-
-            # Register tensor placeholders
-            # (will be filled at runtime)
-            for input_val in op.inputs:
-                if input_val.name not in ctx.tensor_map:
-                    ctx.tensor_map[input_val.name] = None
-
+            # Collect tensor allocations
             for output_val in op.outputs:
                 if isinstance(output_val.type, TensorType):
                     shape = output_val.type.shape
@@ -178,15 +403,14 @@ class TritonCompiler(Backend):
                     tensor_allocations[output_val.name] = (shape, dtype)
                     output_values[output_val.name] = output_val
 
-            # Generate kernel (placeholder for now, will be filled at runtime)
-            from devproc.backend.triton.codegen import TritonKernelSpec
-
+            # Create a simple kernel spec with op info
+            # The actual kernel_fn will be created at runtime
             kernel_spec = TritonKernelSpec(
                 name=op.name,
                 grid=(1,),
                 num_warps=4,
                 num_stages=2,
-                kernel_fn=lambda: None,
+                kernel_fn=None,  # Will be created at runtime
                 args=(),
                 kwargs={},
             )
@@ -197,6 +421,7 @@ class TritonCompiler(Backend):
             kernels=kernels,
             tensor_allocations=tensor_allocations,
             device_id=self.device_id,
+            aot_kernels=aot_kernels,
         )
 
 

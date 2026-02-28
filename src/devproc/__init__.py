@@ -79,6 +79,39 @@ def compile(target, *example_inputs, backend: str = "triton", **kwargs):
         return compiler.compile(ir_function)
     raise ValueError(f"Unknown backend: {backend}")
 
+
+def save(compiled_program, path: str) -> None:
+    """保存编译好的程序到文件
+
+    Args:
+        compiled_program: 编译好的程序 (TritonCompiledProgram)
+        path: 保存路径
+
+    Example:
+        >>> compiled = compile(my_kernel, x, backend="triton")
+        >>> save(compiled, "model")
+        # 生成 model.cubin 和 model.meta.json
+    """
+    compiled_program.export(path)
+
+
+def load(path: str, device_id: int = 0):
+    """从文件加载编译好的程序
+
+    Args:
+        path: 程序文件路径
+        device_id: CUDA 设备 ID
+
+    Returns:
+        加载的编译程序
+
+    Example:
+        >>> loaded = load("model", device_id=0)
+        >>> result = loaded.run(x=tensor)
+    """
+    from devproc.backend.triton import TritonCompiledProgram
+    return TritonCompiledProgram.load(path, device_id=device_id)
+
 __all__ = [
     # IR
     "Type",
@@ -130,4 +163,6 @@ __all__ = [
     # Runtime and compile
     "Runtime",
     "compile",
+    "save",
+    "load",
 ]

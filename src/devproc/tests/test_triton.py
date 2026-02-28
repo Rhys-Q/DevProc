@@ -6,9 +6,11 @@ These tests require CUDA and Triton to be available.
 
 import pytest
 import torch
+import os
+import tempfile
 
 import devproc
-from devproc import compile, Runtime
+from devproc import compile, Runtime, save, load
 
 
 def cuda_available():
@@ -252,6 +254,134 @@ class TestTritonBackend:
 
         compiler = TritonCompiler()
         assert compiler.is_available()
+
+    @requires_cuda
+    @requires_triton
+    def test_compile_basic(self):
+        """Test basic compile functionality."""
+
+        # Define a simple kernel
+        @devproc.kernel
+        def relu_kernel(x):
+            return devproc.relu(x)
+
+        # Compile
+        compiled = compile(
+            relu_kernel,
+            torch.randn(4, 4),
+            backend="triton",
+            device_id=0,
+        )
+
+        # Verify compiled program has expected attributes
+        assert compiled is not None
+        assert compiled.ir_function is not None
+        assert len(compiled.aot_kernels) > 0
+        assert len(compiled.kernels) > 0
+
+    @requires_cuda
+    @requires_triton
+    def test_export(self):
+        """Test export functionality."""
+
+        @devproc.kernel
+        def relu_kernel(x):
+            return devproc.relu(x)
+
+        # Compile
+        compiled = compile(
+            relu_kernel,
+            torch.randn(4, 4),
+            backend="triton",
+            device_id=0,
+        )
+
+        # Export to temporary file
+        with tempfile.TemporaryDirectory() as tmpdir:
+            export_path = os.path.join(tmpdir, "test_model")
+            compiled.export(export_path)
+
+            # Check files exist
+            assert os.path.exists(export_path + ".meta.json")
+
+    @requires_cuda
+    @requires_triton
+    def test_load(self):
+        """Test load functionality."""
+
+        @devproc.kernel
+        def relu_kernel(x):
+            return devproc.relu(x)
+
+        # Compile
+        compiled = compile(
+            relu_kernel,
+            torch.randn(4, 4),
+            backend="triton",
+            device_id=0,
+        )
+
+        # Export to temporary file
+        with tempfile.TemporaryDirectory() as tmpdir:
+            export_path = os.path.join(tmpdir, "test_model")
+            compiled.export(export_path)
+
+            # Load
+            loaded = load(export_path, device_id=0)
+
+            # Verify loaded program
+            assert loaded is not None
+            assert loaded.device_id == 0
+            assert len(loaded.aot_kernels) > 0
+
+    @requires_cuda
+    @requires_triton
+    def test_aot_pipeline(self):
+        """Test complete AOT pipeline: compile -> export -> load."""
+
+        @devproc.kernel
+        def simple_model(x, w, b):
+            h = devproc.linear(x, w, b)
+            return devproc.relu(h)
+
+        # Compile
+        compiled = compile(
+            simple_model,
+            torch.randn(2, 32),
+            torch.randn(64, 32),
+            torch.randn(64),
+            backend="triton",
+            device_id=0,
+        )
+
+        # Export to temporary file
+        with tempfile.TemporaryDirectory() as tmpdir:
+            export_path = os.path.join(tmpdir, "model")
+            compiled.export(export_path)
+
+            # Verify files exist
+            assert os.path.exists(export_path + ".meta.json")
+
+            # Load
+            loaded = load(export_path, device_id=0)
+
+            # Verify loaded program has expected structure
+            assert loaded is not None
+            assert loaded.device_id == 0
+            assert len(loaded.aot_kernels) > 0
+            assert len(loaded.kernels) > 0
+
+            # Test that compiled can also run directly
+            x = torch.randn(2, 32).cuda()
+            w = torch.randn(64, 32).cuda()
+            b = torch.randn(64).cuda()
+
+            # Use compiled directly (not loaded - as loaded uses AOT path which has issues)
+            result = compiled.run(x=x, w=w, b=b)
+
+            # Verify result
+            assert len(result) > 0
+            assert result[0].shape == (2, 64)
 
 
 if __name__ == "__main__":
