@@ -69,22 +69,9 @@ class TritonCompiledProgram(CompiledProgram):
 
     def _run_aot(self, **kwargs) -> List[torch.Tensor]:
         """Execute using AOT compiled kernels with CUDA Driver API."""
-        from devproc.backend.triton.runtime import KernelLauncher
-
-        if self.launcher is None:
-            self.launcher = KernelLauncher(self.device_id)
-
-            # Register all AOT kernels
-            for aot_kernel in self.aot_kernels:
-                if aot_kernel.cubin:
-                    self.launcher.register_kernel(
-                        name=aot_kernel.name,
-                        cubin=aot_kernel.cubin,
-                        grid=aot_kernel.grid,
-                        block=aot_kernel.block,
-                        num_warps=aot_kernel.num_warps,
-                        num_stages=aot_kernel.num_stages,
-                    )
+        # For now, fall back to JIT as AOT has issues
+        logger.warning("AOT execution not fully working, falling back to JIT")
+        return self._run_jit(**kwargs)
 
         # Prepare inputs
         inputs = {}
@@ -115,12 +102,64 @@ class TritonCompiledProgram(CompiledProgram):
             # Build kernel arguments
             args = []
 
-            # Add input arguments
-            for param_name, _ in aot_kernel.signature:
+            # Add arguments based on signature
+            for param_name, param_dtype in aot_kernel.signature:
                 if param_name in input_ptrs:
+                    # Tensor argument - pass as (tensor, size) tuple
                     args.append(input_ptrs[param_name])
                 elif param_name in output_ptrs:
+                    # Tensor argument - pass as (tensor, size) tuple
                     args.append(output_ptrs[param_name])
+                elif param_name == "n_elements":
+                    # Scalar - pass as int
+                    # Find from input tensors
+                    n_elements = 1
+                    for name, tensor in inputs.items():
+                        n_elements = tensor.numel()
+                        break
+                    args.append(n_elements)
+                elif param_name == "BLOCK_SIZE":
+                    # Scalar - pass as int
+                    args.append(128)
+                elif param_name in ("M", "N", "K"):
+                    # Matmul dimensions - extract from input tensors
+                    if param_name == "M" and inputs:
+                        for name, tensor in inputs.items():
+                            args.append(tensor.shape[0])
+                            break
+                    elif param_name == "N" and len(inputs) > 1:
+                        for name, tensor in list(inputs.items())[1:]:
+                            args.append(tensor.shape[0])
+                            break
+                    elif param_name == "K" and inputs:
+                        for name, tensor in inputs.items():
+                            args.append(tensor.shape[1] if len(tensor.shape) > 1 else tensor.shape[0])
+                            break
+                    else:
+                        args.append(1)
+                elif "stride" in param_name:
+                    # Stride values - extract from input tensors
+                    if inputs:
+                        for name, tensor in inputs.items():
+                            strides = list(tensor.stride())
+                            if param_name == "stride_am":
+                                args.append(strides[0] if len(strides) > 0 else 1)
+                            elif param_name == "stride_ak":
+                                args.append(strides[1] if len(strides) > 1 else 1)
+                            elif param_name == "stride_bk":
+                                args.append(strides[0] if len(strides) > 0 else 1)
+                            elif param_name == "stride_bn":
+                                args.append(strides[1] if len(strides) > 1 else 1)
+                            elif param_name == "stride_cm":
+                                args.append(1)
+                            elif param_name == "stride_cn":
+                                args.append(1)
+                            break
+                    else:
+                        args.append(1)
+                else:
+                    # Unknown parameter, skip
+                    logger.warning(f"Unknown kernel parameter: {param_name}")
 
             # Launch kernel
             try:
@@ -157,26 +196,33 @@ class TritonCompiledProgram(CompiledProgram):
             else:
                 inputs[name] = tensor.to(f"cuda:{self.device_id}")
 
-        # Allocate and copy inputs
+        # If we have ir_function, use the handler-based execution
+        if self.ir_function:
+            return self._run_jit_with_ir(inputs)
+
+        # Otherwise, use aot_kernels directly
+        return self._run_jit_direct(inputs)
+
+    def _run_jit_with_ir(self, inputs: Dict[str, torch.Tensor]) -> List[torch.Tensor]:
+        """Execute using IR function and handlers."""
         ctx = TritonLoweringContext(self.device_id)
 
         # Map IR function inputs to kwargs
-        if self.ir_function:
-            for input_param in self.ir_function.inputs:
-                param_name = input_param.name
-                if param_name in inputs:
-                    tensor = inputs[param_name]
-                else:
-                    continue
+        for input_param in self.ir_function.inputs:
+            param_name = input_param.name
+            if param_name in inputs:
+                tensor = inputs[param_name]
+            else:
+                continue
 
-                # Allocate GPU tensor
-                gpu_tensor = self.tensor_manager.allocate_output(
-                    param_name,
-                    tensor.shape,
-                    TensorManager.convertTorchToStr(tensor.dtype),
-                )
-                gpu_tensor.copy_(tensor)
-                ctx.set_tensor(param_name, gpu_tensor)
+            # Allocate GPU tensor
+            gpu_tensor = self.tensor_manager.allocate_output(
+                param_name,
+                tensor.shape,
+                TensorManager.convertTorchToStr(tensor.dtype),
+            )
+            gpu_tensor.copy_(tensor)
+            ctx.set_tensor(param_name, gpu_tensor)
 
         # Allocate output tensors
         for name, (shape, dtype) in self.tensor_allocations.items():
@@ -185,12 +231,11 @@ class TritonCompiledProgram(CompiledProgram):
                 ctx.set_tensor(name, output_tensor)
 
         # Execute kernels using handlers at runtime
-        if self.ir_function:
-            for op in self.ir_function.block.ops:
-                self._execute_op_jit(op, ctx)
+        for op in self.ir_function.block.ops:
+            self._execute_op_jit(op, ctx)
 
         # Collect outputs
-        if self.ir_function and self.ir_function.block.ops:
+        if self.ir_function.block.ops:
             last_op = self.ir_function.block.ops[-1]
             output_names = [out.name for out in last_op.outputs]
         else:
@@ -201,6 +246,67 @@ class TritonCompiledProgram(CompiledProgram):
             tensor = ctx.get_tensor(name)
             if tensor is not None:
                 outputs.append(tensor.cpu())
+
+        return outputs
+
+    def _run_jit_direct(self, inputs: Dict[str, torch.Tensor]) -> List[torch.Tensor]:
+        """Execute using aot_kernels directly when ir_function is not available."""
+        output_tensors = {}
+        output_names = []
+
+        # Allocate output tensors
+        for name, (shape, dtype_str) in self.tensor_allocations.items():
+            dtype = self._str_to_dtype(dtype_str)
+            tensor = torch.empty(shape, dtype=dtype, device="cuda")
+            output_tensors[name] = tensor
+            output_names.append(name)
+
+        # Execute each aot_kernel directly
+        for aot_kernel in self.aot_kernels:
+            kernel_fn = aot_kernel.kernel_fn
+            if kernel_fn is None:
+                logger.warning(f"No kernel function for {aot_kernel.name}")
+                continue
+
+            # Build arguments based on signature
+            args = []
+            for param_name, param_dtype in aot_kernel.signature:
+                if param_name in inputs:
+                    # Input tensor
+                    args.append(inputs[param_name])
+                elif param_name in output_tensors:
+                    # Output tensor
+                    args.append(output_tensors[param_name])
+                elif param_name == "n_elements":
+                    # Compute n_elements from first input
+                    for inp in inputs.values():
+                        args.append(inp.numel())
+                        break
+                elif param_name == "BLOCK_SIZE":
+                    args.append(128)
+                else:
+                    # Default value
+                    args.append(1)
+
+            # Determine grid
+            grid = aot_kernel.grid
+            if grid == (1, 1, 1):
+                # Compute grid from input size
+                for inp in inputs.values():
+                    n_elements = inp.numel()
+                    grid = ((n_elements + 127) // 128, 1, 1)
+                    break
+
+            # Launch kernel
+            try:
+                kernel_fn[grid](*args)
+            except Exception as e:
+                logger.warning(f"Failed to execute kernel {aot_kernel.name}: {e}")
+
+        # Collect outputs
+        outputs = []
+        for name in output_names:
+            outputs.append(output_tensors[name].cpu())
 
         return outputs
 
@@ -305,6 +411,11 @@ class TritonCompiledProgram(CompiledProgram):
         tensor_allocations = {}
         for name, info in metadata.tensor_allocations.items():
             tensor_allocations[name] = (tuple(info["shape"]), info["dtype"])
+
+        # Reconstruct kernel_fn from templates
+        for kernel in kernels:
+            if kernel.kernel_fn is None:
+                kernel.kernel_fn = _reconstruct_kernel_fn(kernel.name)
 
         # Create launcher and register kernels
         launcher = None
@@ -471,6 +582,25 @@ class TritonRuntime:
                 inputs[name] = tensor.to(f"cuda:{self.device_id}")
 
         return self.compiled_program.run(**inputs)
+
+
+def _reconstruct_kernel_fn(kernel_name: str):
+    """Reconstruct kernel function from template based on kernel name."""
+    from devproc.backend.triton.templates import elementwise, matmul, reduce
+
+    # Map kernel names to template functions
+    kernel_map = {
+        "normalize_kernel": elementwise.normalize_kernel,
+        "relu_kernel": elementwise.relu_kernel,
+        "sigmoid_kernel": elementwise.sigmoid_kernel,
+        "to_dtype_kernel": elementwise.to_dtype_kernel,
+        "add_kernel": elementwise.add_kernel,
+        "matmul_kernel": matmul.matmul_kernel,
+        "softmax_kernel": reduce.softmax_kernel,
+        "argmax_kernel": reduce.argmax_kernel,
+    }
+
+    return kernel_map.get(kernel_name)
 
 
 # Convenience function for quick usage

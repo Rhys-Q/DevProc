@@ -214,16 +214,11 @@ class CUDADriver:
         """Load a CUDA module from memory (cubin binary)."""
         module = c_void_p()
 
-        # Create a ctypes copy of the cubin data
-        cubin_ctype = (c_char_p * len(cubin))()
-        for i, b in enumerate(cubin):
-            cubin_ctype[i] = c_char_p(bytes([b]))
-
-        # Use c_void_p to pass the address
-        cubin_ptr = ctypes.cast(cubin, c_void_p)
+        # Create a mutable buffer from the cubin bytes
+        cubin_buffer = ctypes.create_string_buffer(cubin)
 
         self._check_error(
-            self._lib.cuModuleLoadData(byref(module), cubin_ptr),
+            self._lib.cuModuleLoadData(byref(module), cubin_buffer),
             "cuModuleLoadData"
         )
         self._modules.append(module)

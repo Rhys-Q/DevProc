@@ -73,7 +73,7 @@ class AOTCompiler:
             "to": (elementwise.to_dtype_kernel, "elementwise"),
             "add": (elementwise.add_kernel, "elementwise"),
             "matmul": (matmul.matmul_kernel, "matmul"),
-            "linear": (matmul.linear_kernel, "matmul") if hasattr(matmul, 'linear_kernel') else None,
+            "linear": (matmul.linear_kernel, "matmul") if hasattr(matmul, "linear_kernel") else None,
             "softmax": (reduce.softmax_kernel, "reduce"),
             "argmax": (reduce.argmax_kernel, "reduce"),
         }
@@ -99,9 +99,18 @@ class AOTCompiler:
         if kernel_fn is None:
             raise ValueError(f"Op {op_name} not yet implemented for AOT")
 
+        # Handle Autotuner wrapper - get the underlying function
+        if hasattr(kernel_fn, "fn"):
+            actual_fn = kernel_fn.fn
+        else:
+            actual_fn = kernel_fn
+
+        # Use the actual kernel function name (e.g., "relu_kernel") for registration
+        kernel_name = actual_fn.__name__
+
         # Extract metadata
-        aot_kernel = AOTCompiledKernel(name=op_name)
-        aot_kernel.signature = self._extract_signature(op)
+        aot_kernel = AOTCompiledKernel(name=kernel_name)
+        aot_kernel.signature = self._extract_signature(op, input_tensors)
         aot_kernel.input_names = [v.name for v in op.inputs]
         aot_kernel.output_names = [v.name for v in op.outputs]
 
@@ -117,18 +126,18 @@ class AOTCompiler:
 
             # Try to extract cubin from compiled kernel
             # Triton stores compiled artifacts in the compiled object
-            if hasattr(compiled, 'asm'):
+            if hasattr(compiled, "asm"):
                 asm = compiled.asm
                 if asm is not None:
-                    aot_kernel.cubin = asm.get('cubin')
-                    aot_kernel.ptx = asm.get('ptx')
+                    aot_kernel.cubin = asm.get("cubin")
+                    aot_kernel.ptx = asm.get("ptx")
 
             # Get launch config
-            if hasattr(compiled, 'grid'):
+            if hasattr(compiled, "grid"):
                 aot_kernel.grid = compiled.grid
-            if hasattr(compiled, 'num_warps'):
+            if hasattr(compiled, "num_warps"):
                 aot_kernel.num_warps = compiled.num_warps
-            if hasattr(compiled, 'num_stages'):
+            if hasattr(compiled, "num_stages"):
                 aot_kernel.num_stages = compiled.num_stages
 
             # Compute block from num_warps
@@ -137,8 +146,9 @@ class AOTCompiler:
         except Exception as e:
             logger.warning(f"JIT compilation for {op_name} failed: {e}")
 
-        # Always keep the original kernel_fn for JIT fallback execution
-        aot_kernel.kernel_fn = kernel_fn
+        # Always keep the kernel_fn for JIT fallback execution
+        # Use actual_fn if available (for Autotuner), otherwise use kernel_fn
+        aot_kernel.kernel_fn = actual_fn if "actual_fn" in locals() else kernel_fn
 
         self.compiled_kernels.append(aot_kernel)
         return aot_kernel
@@ -149,29 +159,149 @@ class AOTCompiler:
         op: Op,
         input_tensors: Dict[str, torch.Tensor],
     ) -> Any:
-        """Compile a kernel using Triton JIT and extract the compiled artifact.
-
-        This performs a "warmup" run to trigger compilation and capture
-        the compiled binary.
-        """
+        """Compile a kernel using Triton JIT and extract cubin from the compiled result."""
         # Determine grid and block size based on operation
         grid, num_warps, num_stages = self._compute_launch_config(op, input_tensors)
 
-        # Prepare dummy inputs for compilation
-        dummy_args = self._prepare_dummy_args(kernel_fn, op, input_tensors)
-
-        # Run JIT compilation
-        # Triton will compile on first run
         try:
-            # Use torch.cuda to get current device
             if not torch.cuda.is_available():
                 raise RuntimeError("CUDA not available")
+
+            # Prepare all arguments including scalars
+            args = self._prepare_all_args(kernel_fn, op, input_tensors, grid, num_warps, num_stages)
+
+            if args is None:
+                raise ValueError("Failed to prepare kernel arguments")
+
+            # Launch kernel to trigger compilation and get compiled result
+            compiled = kernel_fn[grid](*args)
+
+            # Synchronize to ensure compilation is complete
+            torch.cuda.synchronize(self.device_id)
+
+            # The compiled object should now have asm with cubin and ptx
+            if hasattr(compiled, "asm") and compiled.asm:
+                logger.info(
+                    f"AOT compiled {op.name}: cubin={bool(compiled.asm.get('cubin'))}, ptx={bool(compiled.asm.get('ptx'))}"
+                )
+                return compiled
+            else:
+                logger.warning(f"No asm in compiled kernel for {op.name}")
+
+        except Exception as e:
+            logger.warning(f"JIT compilation for {op.name} failed: {e}")
+
+        # Fallback: return mock
+        class CompiledKernel:
+            def __init__(self, grid, num_warps, num_stages):
+                self.grid = grid
+                self.num_warps = num_warps
+                self.num_stages = num_stages
+                self.asm = {}
+
+        return CompiledKernel(grid, num_warps, num_stages)
+
+    def _prepare_all_args(
+        self,
+        kernel_fn: Any,
+        op: Op,
+        input_tensors: Dict[str, torch.Tensor],
+        grid: Tuple[int, int, int],
+        num_warps: int,
+        num_stages: int,
+    ) -> Optional[List[Any]]:
+        """Prepare all arguments for kernel launch including scalars."""
+        args = []
+
+        # Get scalar values based on operation type
+        op_name = op.name
+        BLOCK_SIZE = 128
+
+        if op_name in ("matmul", "linear"):
+            # Matmul: a, b, c, M, N, K, stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn
+            if len(op.inputs) >= 2:
+                # Get input tensor a
+                a_tensor = None
+                for val in op.inputs:
+                    if isinstance(val.type, TensorType):
+                        a_tensor = input_tensors.get(val.name)
+                        if a_tensor is None:
+                            a_tensor = torch.empty(
+                                val.type.shape, dtype=self._str_to_dtype(val.type.dtype), device="cuda"
+                            )
+                        break
+
+                # Get weight tensor b
+                b_tensor = None
+                for val in op.inputs[1:]:
+                    if isinstance(val.type, TensorType):
+                        b_tensor = input_tensors.get(val.name)
+                        if b_tensor is None:
+                            b_tensor = torch.empty(
+                                val.type.shape, dtype=self._str_to_dtype(val.type.dtype), device="cuda"
+                            )
+                        break
+
+                if a_tensor is None or b_tensor is None:
+                    return None
+
+                M, K = a_tensor.shape
+                N = b_tensor.shape[0]
+
+                args.extend([a_tensor, b_tensor])  # a_ptr, b_ptr
+                args.append(torch.empty(M, N, dtype=a_tensor.dtype, device="cuda"))  # c_ptr
+                args.extend([M, N, K])  # M, N, K
+                args.extend([a_tensor.stride(0), a_tensor.stride(1)])  # stride_am, stride_ak
+                args.extend([b_tensor.stride(0), b_tensor.stride(1)])  # stride_bk, stride_bn
+                args.append(torch.empty(M, N, dtype=a_tensor.dtype, device="cuda").stride(0))  # stride_cm
+                args.append(1)  # stride_cn
+
+                return args
+
+        # Element-wise and reduce operations: input_ptr, output_ptr, n_elements, BLOCK_SIZE
+        # Get input tensor
+        input_tensor = None
+        for val in op.inputs:
+            if isinstance(val.type, TensorType):
+                input_tensor = input_tensors.get(val.name)
+                if input_tensor is None:
+                    input_tensor = torch.empty(val.type.shape, dtype=self._str_to_dtype(val.type.dtype), device="cuda")
+                break
+
+        if input_tensor is None:
+            return None
+
+        n_elements = input_tensor.numel()
+
+        # Output tensor
+        output_tensor = torch.empty_like(input_tensor)
+
+        # Build args based on operation
+        args.append(input_tensor)
+        args.append(output_tensor)
+        args.append(n_elements)
+        args.append(BLOCK_SIZE)
+
+        return args
+
+    def _compile_kernel_jit_fallback(
+        self,
+        kernel_fn: Any,
+        op: Op,
+        input_tensors: Dict[str, torch.Tensor],
+        grid: Tuple[int, int, int],
+        num_warps: int,
+        num_stages: int,
+    ) -> Any:
+        """Fallback: JIT warmup to get launch config."""
+        try:
+            # Prepare dummy inputs for compilation
+            dummy_args = self._prepare_dummy_args(kernel_fn, op, input_tensors)
 
             # Create output tensors on GPU
             outputs = self._create_dummy_outputs(op)
 
             # Launch kernel to trigger compilation
-            # Note: This is a warmup run - results are discarded
             kernel_fn[grid](
                 *dummy_args,
                 *outputs,
@@ -182,23 +312,75 @@ class AOTCompiler:
             # Synchronize to ensure compilation is complete
             torch.cuda.synchronize(self.device_id)
 
-            # Get the compiled kernel from Triton's cache
-            # Triton's compiled kernels are cached - we need to retrieve them
-            # This is a workaround - in practice, we'd use triton.compile() directly
-
         except Exception as e:
             logger.debug(f"Warmup compilation attempt: {e}")
 
-        # Return a mock compiled object for now
-        # In production, we'd use triton.compile() with AOT options
+        # Return compiled object without asm (JIT fallback)
         class CompiledKernel:
             def __init__(self, grid, num_warps, num_stages):
                 self.grid = grid
                 self.num_warps = num_warps
                 self.num_stages = num_stages
-                self.asm = {}  # Placeholder - would be filled by real AOT compile
+                self.asm = {}
 
         return CompiledKernel(grid, num_warps, num_stages)
+
+    def _get_op_shapes(self, op: Op, input_tensors: Dict[str, torch.Tensor]) -> Dict[str, Tuple]:
+        """Get shapes for all tensors in an operation."""
+        shapes = {}
+
+        # Input shapes
+        for val in op.inputs:
+            if isinstance(val.type, TensorType):
+                if val.name in input_tensors:
+                    shapes[val.name] = input_tensors[val.name].shape
+                else:
+                    shapes[val.name] = val.type.shape
+
+        # Output shapes
+        for val in op.outputs:
+            if isinstance(val.type, TensorType):
+                shapes[val.name] = val.type.shape
+
+        return shapes
+
+    def _build_triton_signature(self, op: Op, shapes: Dict[str, Tuple]) -> Dict[str, str]:
+        """Build Triton signature from operation."""
+        signature = {}
+
+        # Map dtype strings to Triton types
+        dtype_to_triton = {
+            "float32": "*fp32",
+            "float16": "*fp16",
+            "float64": "*fp64",
+            "int32": "*i32",
+            "int64": "*i64",
+            "int16": "*i16",
+            "int8": "*i8",
+            "uint8": "*u8",
+            "bool": "*i1",
+        }
+
+        # Add input pointers
+        idx = 0
+        for val in op.inputs:
+            if isinstance(val.type, TensorType):
+                dtype = dtype_to_triton.get(val.type.dtype, "*fp32")
+                signature[idx] = dtype
+                idx += 1
+
+        # Add output pointers
+        for val in op.outputs:
+            if isinstance(val.type, TensorType):
+                dtype = dtype_to_triton.get(val.type.dtype, "*fp32")
+                signature[idx] = dtype
+                idx += 1
+
+        # Add scalar constants
+        # For now, add common ones
+        signature[idx] = "i32"  # n_elements or similar
+
+        return signature
 
     def _compute_launch_config(
         self,
@@ -218,8 +400,10 @@ class AOTCompiler:
                 BLOCK_N = 256
                 grid = (
                     triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N),
+                    1,
+                    1,
                 )
-                return (grid, 1, 1), 8, 2
+                return grid, 8, 2
 
         elif op_name in ("argmax", "softmax"):
             # Reduce operations
@@ -228,8 +412,8 @@ class AOTCompiler:
                 M = shape[0] if len(shape) > 1 else 1
                 N = shape[-1]
                 BLOCK_N = 1024
-                grid = (M,)
-                return (grid, 1, 1), 4, 2
+                grid = (M, 1, 1)
+                return grid, 4, 2
 
         else:
             # Element-wise operations
@@ -240,8 +424,8 @@ class AOTCompiler:
                     total_elements *= dim
 
                 BLOCK_SIZE = 128
-                grid = (triton.cdiv(total_elements, BLOCK_SIZE),)
-                return (grid, 1, 1), 4, 2
+                grid = (triton.cdiv(total_elements, BLOCK_SIZE), 1, 1)
+                return grid, 4, 2
 
         # Default config
         return (1, 1, 1), 4, 2
@@ -287,17 +471,47 @@ class AOTCompiler:
 
         return outputs
 
-    def _extract_signature(self, op: Op) -> List[Tuple[str, str]]:
-        """Extract parameter signature from operation."""
+    def _extract_signature(self, op: Op, input_tensors: Dict[str, torch.Tensor]) -> List[Tuple[str, str]]:
+        """Extract parameter signature from operation, including scalar parameters."""
         signature = []
+        op_name = op.name
 
         # Input parameters
         for val in op.inputs:
             if isinstance(val.type, TensorType):
                 signature.append((val.name, val.type.dtype))
 
-        # Constants (non-tensor parameters)
-        # These would be extracted from op.attributes or derived
+        # Output parameters
+        for val in op.outputs:
+            if isinstance(val.type, TensorType):
+                signature.append((val.name, val.type.dtype))
+
+        # Add scalar parameters based on operation type
+        if op_name in ("matmul", "linear"):
+            # Matmul: M, N, K, stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn
+            signature.extend(
+                [
+                    ("M", "int32"),
+                    ("N", "int32"),
+                    ("K", "int32"),
+                    ("stride_am", "int32"),
+                    ("stride_ak", "int32"),
+                    ("stride_bk", "int32"),
+                    ("stride_bn", "int32"),
+                    ("stride_cm", "int32"),
+                    ("stride_cn", "int32"),
+                ]
+            )
+        else:
+            # Element-wise and reduce: n_elements, BLOCK_SIZE
+            # Get n_elements from input tensor
+            if op.inputs and isinstance(op.inputs[0].type, TensorType):
+                shape = op.inputs[0].type.shape
+                n_elements = 1
+                for dim in shape:
+                    n_elements *= dim
+                signature.append(("n_elements", "int32"))
+                signature.append(("BLOCK_SIZE", "int32"))
 
         return signature
 
@@ -334,9 +548,7 @@ class AOTCompiler:
         for param in ir_function.inputs:
             if isinstance(param.type, TensorType):
                 input_tensors[param.name] = torch.empty(
-                    param.type.shape,
-                    dtype=self._str_to_dtype(param.type.dtype),
-                    device="cuda"
+                    param.type.shape, dtype=self._str_to_dtype(param.type.dtype), device="cuda"
                 )
 
         # Compile each operation

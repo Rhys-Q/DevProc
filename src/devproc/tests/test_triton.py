@@ -29,9 +29,7 @@ def triton_available():
 
 
 requires_cuda = pytest.mark.skipif(not cuda_available(), reason="CUDA not available")
-requires_triton = pytest.mark.skipif(
-    not triton_available(), reason="Triton not available"
-)
+requires_triton = pytest.mark.skipif(not triton_available(), reason="Triton not available")
 
 
 class TestTritonBackend:

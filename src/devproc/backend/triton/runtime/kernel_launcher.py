@@ -7,6 +7,7 @@ AOT-compiled CUDA kernels using the CUDA Driver API.
 
 from typing import Dict, List, Tuple, Optional, Any, Callable
 from dataclasses import dataclass
+from ctypes import c_void_p, c_int32, c_int64, c_float, c_double
 import torch
 import logging
 import numpy as np
@@ -195,20 +196,48 @@ class KernelLauncher:
             shared_memory = kernel.shared_memory
 
         # Prepare kernel arguments
+        # All arguments must be passed as pointers. For scalars, we need to
+        # store them in a buffer and pass the pointer.
         if args is None:
             args = []
 
-        # Extract pointers from (tensor, size) or direct pointer
+        # Store scalar values in a buffer
+        scalar_buffers = []
+
         arg_ptrs = []
         for arg in args:
             if isinstance(arg, tuple):
+                # Tuple of (tensor, size) or (pointer, size)
                 ptr = arg[0]
                 if hasattr(ptr, 'data_ptr'):
+                    # It's a torch.Tensor
                     arg_ptrs.append(c_void_p(ptr.data_ptr()))
                 else:
+                    # It's already a pointer
                     arg_ptrs.append(ptr)
+            elif isinstance(arg, torch.Tensor):
+                # Direct tensor - pass pointer to its data
+                arg_ptrs.append(c_void_p(arg.data_ptr()))
+            elif isinstance(arg, int):
+                # Integer scalar - allocate buffer and store value
+                import numpy as np
+                buf = np.array([arg], dtype=np.int32)
+                buf_gpu = torch.from_numpy(buf).cuda()
+                scalar_buffers.append(buf_gpu)
+                arg_ptrs.append(c_void_p(buf_gpu.data_ptr()))
+            elif isinstance(arg, float):
+                # Float scalar - allocate buffer and store value
+                import numpy as np
+                buf = np.array([arg], dtype=np.float32)
+                buf_gpu = torch.from_numpy(buf).cuda()
+                scalar_buffers.append(buf_gpu)
+                arg_ptrs.append(c_void_p(buf_gpu.data_ptr()))
             else:
-                arg_ptrs.append(c_void_p(arg))
+                # Try to convert directly
+                try:
+                    arg_ptrs.append(c_void_p(int(arg)))
+                except (TypeError, ValueError):
+                    arg_ptrs.append(arg)
 
         # Launch kernel
         try:
