@@ -349,7 +349,7 @@ class TritonCompiledProgram(CompiledProgram):
             spec = handler(op, ctx, self.device_id)
             # The handler registers the kernel in ctx
             # Execute any registered kernels
-            if hasattr(ctx, 'kernel_specs'):
+            if hasattr(ctx, "kernel_specs"):
                 for kernel_spec in ctx.kernel_specs:
                     if kernel_spec.kernel_fn is not None:
                         kernel_spec.kernel_fn()
