@@ -50,16 +50,23 @@ def get_fx_op_map() -> Dict[str, str]:
         "aten.softplus": "softplus",
 
         # Element-wise operations
+        "add": "add",
         "aten.add": "add",
         "aten.add_": "add",
+        "sub": "sub",
         "aten.sub": "sub",
         "aten.sub_": "sub",
+        "mul": "mul",
         "aten.mul": "mul",
         "aten.mul_": "mul",
+        "div": "div",
         "aten.div": "div",
         "aten.div_": "div",
+        "pow": "pow",
         "aten.pow": "pow",
+        "neg": "neg",
         "aten.neg": "neg",
+        "abs": "abs",
         "aten.abs": "abs",
 
         # Shape operations
