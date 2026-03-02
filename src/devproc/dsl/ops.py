@@ -650,3 +650,57 @@ def dict_size(d: KernelDict) -> KernelTensor:
     ctx.ir_function.add_op(size_op)
 
     return KernelTensor(size_value)
+
+
+# ==================== VLA Model Operations ====================
+
+def load_vla_module(model_path: str) -> "torch.nn.Module":
+    """
+    Load a VLA model from LeRobot and return the underlying torch.nn.Module.
+
+    This function loads a VLA (Vision-Language-Action) model from the LeRobot
+    repository and returns the underlying PyTorch model for conversion to
+    DevProc IR using devproc.from_torch().
+
+    Args:
+        model_path: Path or name of the VLA model (e.g., "lerobot/pi05_base")
+
+    Returns:
+        torch.nn.Module: The underlying PyTorch model
+
+    Example:
+        >>> import devproc
+        >>> import torch
+        >>>
+        >>> # Load VLA module
+        >>> vla_module = devproc.load_vla_module("lerobot/pi05_base")
+        >>>
+        >>> # Prepare example inputs
+        >>> images = torch.randn(1, 3, 224, 224)
+        >>> state = torch.randn(1, 32)
+        >>> language = "pick up the cup"
+        >>>
+        >>> # Convert to DevProc IR
+        >>> vla_ir = devproc.from_torch(vla_module, example_inputs=(images, state, language))
+    """
+    try:
+        import torch
+    except ImportError:
+        raise ImportError("PyTorch is required to load VLA models. Install with: pip install torch")
+
+    # Try to load from LeRobot
+    # The actual implementation depends on the LeRobot API
+    # For π0.5, we load the policy and extract the model
+    try:
+        from lerobot.policies.pi05 import PI05Policy
+
+        policy = PI05Policy.from_pretrained(model_path)
+        # Return the underlying model for torch -> IR conversion
+        return policy.model
+    except ImportError:
+        raise ImportError(
+            "LeRobot is required to load VLA models. "
+            "Install with: pip install 'lerobot[pi]@git+https://github.com/huggingface/lerobot.git'"
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to load VLA model from {model_path}: {e}")

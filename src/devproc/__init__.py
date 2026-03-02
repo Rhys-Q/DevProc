@@ -23,6 +23,7 @@ from devproc.dsl.types import (
     Tokenizer,
     TorchModel,
     KVCache,
+    IRFunction,
 )
 
 # Module-level devproc functions
@@ -39,6 +40,7 @@ sigmoid = _ops.sigmoid
 softmax = _ops.softmax
 add = _ops.add
 argmax = _ops.argmax
+load_vla_module = _ops.load_vla_module
 
 # DevProc Backend (Triton GPU)
 from devproc.backend.triton import TritonCompiler, TritonRuntime, TritonCompiledProgram
@@ -145,6 +147,7 @@ __all__ = [
     "Tokenizer",
     "TorchModel",
     "KVCache",
+    "IRFunction",
     # Module-level functions
     "load_image",
     "input",
@@ -159,6 +162,7 @@ __all__ = [
     "softmax",
     "add",
     "argmax",
+    "load_vla_module",
     # Backend
     "TritonCompiler",
     "TritonRuntime",

@@ -70,3 +70,13 @@ class TorchModel:
 class KVCache:
     """KVCache type for LLM inference."""
     pass
+
+
+#: IRFunction type annotation
+class IRFunction:
+    """IR Function type for pre-compiled DevProc IR functions.
+
+    This type is used when passing a pre-compiled IR Function (e.g., from
+    devproc.from_torch()) as a parameter to a @devproc.kernel function.
+    """
+    pass
