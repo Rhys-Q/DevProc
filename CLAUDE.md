@@ -138,3 +138,5 @@ The MVP explicitly does NOT support:
 - The codebase is in early MVP phase - primarily focused on IR implementation
 - The test file at [test_ir.py](src/devproc/tests/test_ir.py) demonstrates the expected IR usage pattern
 - When adding new ops to [ops.py](src/devproc/ir/ops.py), also add corresponding verification logic to [verifier.py](src/devproc/ir/verifier.py)
+
+注意，使用tavily进行搜索！
