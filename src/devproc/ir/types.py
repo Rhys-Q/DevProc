@@ -4,7 +4,7 @@ Type system for DevProc IR.
 Strict type system - None/Any types are explicitly forbidden.
 """
 
-from typing import Tuple
+from typing import Tuple, Optional
 
 
 class Type:
@@ -23,6 +23,107 @@ class Type:
 
     def _equals(self, other) -> bool:
         raise NotImplementedError
+
+
+class StringType(Type):
+    """
+    String type for text values.
+
+    Args:
+        max_length: Optional maximum length constraint
+    """
+
+    def __init__(self, max_length: Optional[int] = None):
+        super().__init__()
+        self._max_length = max_length
+
+    @property
+    def max_length(self) -> Optional[int]:
+        return self._max_length
+
+    def _equals(self, other: "StringType") -> bool:
+        return self.max_length == other.max_length
+
+    def __repr__(self) -> str:
+        if self.max_length:
+            return f"string[{self.max_length}]"
+        return "string"
+
+
+class TokenizerType(Type):
+    """
+    Tokenizer type for LLM preprocessing.
+
+    Args:
+        tokenizer_name: Name or path of the tokenizer
+    """
+
+    def __init__(self, tokenizer_name: str = "unknown"):
+        super().__init__()
+        self._tokenizer_name = tokenizer_name
+
+    @property
+    def tokenizer_name(self) -> str:
+        return self._tokenizer_name
+
+    def _equals(self, other: "TokenizerType") -> bool:
+        return self.tokenizer_name == other.tokenizer_name
+
+    def __repr__(self) -> str:
+        return f"tokenizer[{self.tokenizer_name}]"
+
+
+class DictType(Type):
+    """
+    Dict type for key-value storage.
+
+    Args:
+        key_type: Type of keys
+        value_type: Type of values
+    """
+
+    def __init__(self, key_type: Type, value_type: Type):
+        super().__init__()
+        self._key_type = key_type
+        self._value_type = value_type
+
+    @property
+    def key_type(self) -> Type:
+        return self._key_type
+
+    @property
+    def value_type(self) -> Type:
+        return self._value_type
+
+    def _equals(self, other: "DictType") -> bool:
+        return (self.key_type == other.key_type and
+                self.value_type == other.value_type)
+
+    def __repr__(self) -> str:
+        return f"dict<{self.key_type}, {self.value_type}>"
+
+
+class ListType(Type):
+    """
+    List type for sequences.
+
+    Args:
+        element_type: Type of list elements
+    """
+
+    def __init__(self, element_type: Type):
+        super().__init__()
+        self._element_type = element_type
+
+    @property
+    def element_type(self) -> Type:
+        return self._element_type
+
+    def _equals(self, other: "ListType") -> bool:
+        return self.element_type == other.element_type
+
+    def __repr__(self) -> str:
+        return f"list<{self.element_type}>"
 
 
 class TensorType(Type):

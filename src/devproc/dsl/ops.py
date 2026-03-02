@@ -7,7 +7,7 @@ They build IR operations instead of executing computation.
 
 from typing import Optional, Tuple, Any, Union
 from devproc.ir.ops import OpBuilder
-from devproc.ir.types import TensorType
+from devproc.ir.types import TensorType, StringType, TokenizerType, DictType
 from devproc.ir.base import Value
 
 from devproc.dsl.kernel import KernelContext, KernelTensor
@@ -323,3 +323,330 @@ def argmax(tensor: KernelTensor, dim: int = -1) -> KernelTensor:
     ctx.ir_function.add_op(argmax_op)
 
     return KernelTensor(argmax_value)
+
+
+# ==================== Kernel Wrapper Classes ====================
+
+class KernelString:
+    """String wrapper for DSL kernel functions."""
+
+    def __init__(self, ir_value: Value, name: str = None):
+        self._ir_value = ir_value
+        self._name = name or ir_value.name
+
+    @property
+    def ir_value(self) -> Value:
+        return self._ir_value
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+
+class KernelTokenizer:
+    """Tokenizer wrapper for DSL kernel functions."""
+
+    def __init__(self, ir_value: Value, name: str = None):
+        self._ir_value = ir_value
+        self._name = name or ir_value.name
+
+    @property
+    def ir_value(self) -> Value:
+        return self._ir_value
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+
+class KernelDict:
+    """Dict wrapper for DSL kernel functions."""
+
+    def __init__(self, ir_value: Value, name: str = None):
+        self._ir_value = ir_value
+        self._name = name or ir_value.name
+
+    @property
+    def ir_value(self) -> Value:
+        return self._ir_value
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+
+# ==================== Tokenizer Operations ====================
+
+def load_tokenizer(tokenizer_path: str) -> KernelTokenizer:
+    """
+    Load a tokenizer from path or name.
+
+    Args:
+        tokenizer_path: Path or name of the tokenizer (e.g., "gpt2", "./my-tokenizer")
+
+    Returns:
+        KernelTokenizer representing the loaded tokenizer
+    """
+    ctx = KernelContext.get_current()
+
+    # Create IR operation
+    tokenizer_op = OpBuilder.load_tokenizer(tokenizer_path)
+    tokenizer_value = tokenizer_op.outputs[0]
+
+    # Add to function
+    ctx.ir_function.add_op(tokenizer_op)
+
+    return KernelTokenizer(tokenizer_value, f"tokenizer_{tokenizer_path}")
+
+
+def tokenize_encode(tokenizer: KernelTokenizer, text: KernelString) -> KernelTensor:
+    """
+    Encode text to token IDs.
+
+    Args:
+        tokenizer: The tokenizer
+        text: Input text string
+
+    Returns:
+        KernelTensor of token IDs (int32, fixed length 2048)
+    """
+    ctx = KernelContext.get_current()
+
+    encode_op = OpBuilder.tokenize_encode(tokenizer.ir_value, text.ir_value)
+    encode_value = encode_op.outputs[0]
+
+    ctx.ir_function.add_op(encode_op)
+
+    return KernelTensor(encode_value)
+
+
+def tokenize_decode(tokenizer: KernelTokenizer, token_ids: KernelTensor) -> KernelString:
+    """
+    Decode token IDs to text.
+
+    Args:
+        tokenizer: The tokenizer
+        token_ids: Input token IDs
+
+    Returns:
+        KernelString of decoded text
+    """
+    ctx = KernelContext.get_current()
+
+    decode_op = OpBuilder.tokenize_decode(tokenizer.ir_value, token_ids.ir_value)
+    decode_value = decode_op.outputs[0]
+
+    ctx.ir_function.add_op(decode_op)
+
+    return KernelString(decode_value)
+
+
+# ==================== String Operations ====================
+
+def string_input(name: str, max_length: Optional[int] = None) -> KernelString:
+    """
+    Define a string input.
+
+    Args:
+        name: Name of the input
+        max_length: Optional maximum length constraint
+
+    Returns:
+        KernelString representing the input
+    """
+    ctx = KernelContext.get_current()
+
+    string_type = StringType(max_length)
+    input_op = OpBuilder.input(name, TensorType((), "int8", "cpu"))
+    input_value = input_op.outputs[0]
+
+    # Override the type to StringType for semantic meaning
+    input_value._type = string_type
+
+    # Add as parameter
+    ctx.ir_function.add_input(input_value)
+    ctx.param_map[name] = input_value
+
+    return KernelString(input_value, name)
+
+
+def string_length(text: KernelString) -> KernelTensor:
+    """
+    Get string length.
+
+    Args:
+        text: Input string
+
+    Returns:
+        KernelTensor of length (int32 scalar)
+    """
+    ctx = KernelContext.get_current()
+
+    length_op = OpBuilder.string_length(text.ir_value)
+    length_value = length_op.outputs[0]
+
+    ctx.ir_function.add_op(length_op)
+
+    return KernelTensor(length_value)
+
+
+def string_concat(a: KernelString, b: KernelString) -> KernelString:
+    """
+    Concatenate two strings.
+
+    Args:
+        a: First string
+        b: Second string
+
+    Returns:
+        KernelString of concatenated result
+    """
+    ctx = KernelContext.get_current()
+
+    concat_op = OpBuilder.string_concat(a.ir_value, b.ir_value)
+    concat_value = concat_op.outputs[0]
+
+    ctx.ir_function.add_op(concat_op)
+
+    return KernelString(concat_value)
+
+
+def string_slice(text: KernelString, start: int, end: Optional[int] = None) -> KernelString:
+    """
+    Slice a string.
+
+    Args:
+        text: Input string
+        start: Start index
+        end: End index (optional)
+
+    Returns:
+        KernelString of sliced result
+    """
+    ctx = KernelContext.get_current()
+
+    slice_op = OpBuilder.string_slice(text.ir_value, start, end)
+    slice_value = slice_op.outputs[0]
+
+    ctx.ir_function.add_op(slice_op)
+
+    return KernelString(slice_value)
+
+
+def string_format(template: KernelString, *args: KernelTensor) -> KernelString:
+    """
+    Format a string with arguments.
+
+    Args:
+        template: Format template string
+        args: Format arguments (as tensors)
+
+    Returns:
+        KernelString of formatted result
+    """
+    ctx = KernelContext.get_current()
+
+    arg_values = [arg.ir_value for arg in args]
+    format_op = OpBuilder.string_format(template.ir_value, *arg_values)
+    format_value = format_op.outputs[0]
+
+    ctx.ir_function.add_op(format_op)
+
+    return KernelString(format_value)
+
+
+# ==================== Dict Operations ====================
+
+def dict_create(key_dtype: str, value_dtype: str) -> KernelDict:
+    """
+    Create an empty dictionary.
+
+    Args:
+        key_dtype: Data type of keys ("string" or tensor dtype like "float32")
+        value_dtype: Data type of values (tensor dtype like "float32")
+
+    Returns:
+        KernelDict representing the created dictionary
+    """
+    ctx = KernelContext.get_current()
+
+    # Determine key and value types
+    if key_dtype == "string":
+        key_type = StringType()
+    else:
+        key_type = TensorType((), key_dtype, "cpu")
+
+    if value_dtype == "string":
+        value_type = StringType()
+    else:
+        value_type = TensorType((), value_dtype, "cpu")
+
+    dict_op = OpBuilder.dict_create(key_type, value_type)
+    dict_value = dict_op.outputs[0]
+
+    ctx.ir_function.add_op(dict_op)
+
+    return KernelDict(dict_value)
+
+
+def dict_get(d: KernelDict, key: KernelString) -> KernelTensor:
+    """
+    Get value from dictionary.
+
+    Args:
+        d: Dictionary
+        key: Key string
+
+    Returns:
+        KernelTensor of the value
+    """
+    ctx = KernelContext.get_current()
+
+    get_op = OpBuilder.dict_get(d.ir_value, key.ir_value)
+    get_value = get_op.outputs[0]
+
+    ctx.ir_function.add_op(get_op)
+
+    return KernelTensor(get_value)
+
+
+def dict_set(d: KernelDict, key: KernelString, value: KernelTensor) -> KernelDict:
+    """
+    Set value in dictionary.
+
+    Args:
+        d: Dictionary
+        key: Key string
+        value: Value tensor
+
+    Returns:
+        KernelDict (updated dictionary)
+    """
+    ctx = KernelContext.get_current()
+
+    set_op = OpBuilder.dict_set(d.ir_value, key.ir_value, value.ir_value)
+    set_value = set_op.outputs[0]
+
+    ctx.ir_function.add_op(set_op)
+
+    return KernelDict(set_value)
+
+
+def dict_size(d: KernelDict) -> KernelTensor:
+    """
+    Get dictionary size.
+
+    Args:
+        d: Dictionary
+
+    Returns:
+        KernelTensor of size (int32 scalar)
+    """
+    ctx = KernelContext.get_current()
+
+    size_op = OpBuilder.dict_size(d.ir_value)
+    size_value = size_op.outputs[0]
+
+    ctx.ir_function.add_op(size_op)
+
+    return KernelTensor(size_value)

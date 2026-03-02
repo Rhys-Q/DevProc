@@ -11,7 +11,7 @@ Validates IR correctness:
 from typing import List, Set
 from devproc.ir.function import Function
 from devproc.ir.base import Op, Value
-from devproc.ir.types import TensorType, ScalarType
+from devproc.ir.types import TensorType, ScalarType, StringType, TokenizerType, DictType
 
 
 class IRVerifier:
@@ -179,6 +179,190 @@ class IRVerifier:
                     self.errors.append(
                         f"relu: input shape {input_type.shape} != output shape {output_type.shape}"
                     )
+
+            # ========== Tokenizer Operations ==========
+
+            elif op.name == "load_tokenizer":
+                # load_tokenizer: no inputs, output should be TokenizerType
+                if len(op.outputs) != 1:
+                    self.errors.append("load_tokenizer should have 1 output")
+                    continue
+
+                output = op.outputs[0]
+                if not isinstance(output.type, TokenizerType):
+                    self.errors.append(
+                        f"load_tokenizer output must be TokenizerType, got {type(output.type)}"
+                    )
+
+            elif op.name == "tokenize_encode":
+                # tokenize_encode: inputs = TokenizerType + StringType, output = TensorType int32
+                if len(op.inputs) != 2:
+                    self.errors.append("tokenize_encode requires 2 inputs")
+                    continue
+                if len(op.outputs) != 1:
+                    self.errors.append("tokenize_encode requires 1 output")
+                    continue
+
+                if not isinstance(op.inputs[0].type, TokenizerType):
+                    self.errors.append("tokenize_encode input 0 must be TokenizerType")
+                if not isinstance(op.inputs[1].type, StringType):
+                    self.errors.append("tokenize_encode input 1 must be StringType")
+
+                output = op.outputs[0]
+                if not isinstance(output.type, TensorType):
+                    self.errors.append(
+                        f"tokenize_encode output must be TensorType, got {type(output.type)}"
+                    )
+                elif output.type.dtype != "int32":
+                    self.errors.append(
+                        f"tokenize_encode output dtype must be int32, got {output.type.dtype}"
+                    )
+
+            elif op.name == "tokenize_decode":
+                # tokenize_decode: inputs = TokenizerType + TensorType, output = StringType
+                if len(op.inputs) != 2:
+                    self.errors.append("tokenize_decode requires 2 inputs")
+                    continue
+                if len(op.outputs) != 1:
+                    self.errors.append("tokenize_decode requires 1 output")
+                    continue
+
+                if not isinstance(op.inputs[0].type, TokenizerType):
+                    self.errors.append("tokenize_decode input 0 must be TokenizerType")
+                if not isinstance(op.inputs[1].type, TensorType):
+                    self.errors.append("tokenize_decode input 1 must be TensorType")
+
+                output = op.outputs[0]
+                if not isinstance(output.type, StringType):
+                    self.errors.append(
+                        f"tokenize_decode output must be StringType, got {type(output.type)}"
+                    )
+
+            # ========== String Operations ==========
+
+            elif op.name == "string_length":
+                # string_length: input = StringType, output = ScalarType int32
+                if len(op.inputs) != 1:
+                    self.errors.append("string_length requires 1 input")
+                    continue
+                if len(op.outputs) != 1:
+                    self.errors.append("string_length requires 1 output")
+                    continue
+
+                if not isinstance(op.inputs[0].type, StringType):
+                    self.errors.append("string_length input must be StringType")
+
+                output = op.outputs[0]
+                if not isinstance(output.type, ScalarType):
+                    self.errors.append("string_length output must be ScalarType")
+
+            elif op.name == "string_concat":
+                # string_concat: inputs = StringType + StringType, output = StringType
+                if len(op.inputs) != 2:
+                    self.errors.append("string_concat requires 2 inputs")
+                    continue
+                if len(op.outputs) != 1:
+                    self.errors.append("string_concat requires 1 output")
+                    continue
+
+                if not isinstance(op.inputs[0].type, StringType):
+                    self.errors.append("string_concat input 0 must be StringType")
+                if not isinstance(op.inputs[1].type, StringType):
+                    self.errors.append("string_concat input 1 must be StringType")
+
+                output = op.outputs[0]
+                if not isinstance(output.type, StringType):
+                    self.errors.append("string_concat output must be StringType")
+
+            elif op.name == "string_slice":
+                # string_slice: input = StringType, output = StringType
+                if len(op.inputs) != 1:
+                    self.errors.append("string_slice requires 1 input")
+                    continue
+                if len(op.outputs) != 1:
+                    self.errors.append("string_slice requires 1 output")
+                    continue
+
+                if not isinstance(op.inputs[0].type, StringType):
+                    self.errors.append("string_slice input must be StringType")
+
+                output = op.outputs[0]
+                if not isinstance(output.type, StringType):
+                    self.errors.append("string_slice output must be StringType")
+
+            elif op.name == "string_format":
+                # string_format: inputs = StringType + args, output = StringType
+                if len(op.inputs) < 1:
+                    self.errors.append("string_format requires at least 1 input")
+                    continue
+                if len(op.outputs) != 1:
+                    self.errors.append("string_format requires 1 output")
+                    continue
+
+                if not isinstance(op.inputs[0].type, StringType):
+                    self.errors.append("string_format input 0 must be StringType")
+
+                output = op.outputs[0]
+                if not isinstance(output.type, StringType):
+                    self.errors.append("string_format output must be StringType")
+
+            # ========== Dict Operations ==========
+
+            elif op.name == "dict_create":
+                # dict_create: no inputs, output = DictType
+                if len(op.outputs) != 1:
+                    self.errors.append("dict_create requires 1 output")
+                    continue
+
+                output = op.outputs[0]
+                if not isinstance(output.type, DictType):
+                    self.errors.append(
+                        f"dict_create output must be DictType, got {type(output.type)}"
+                    )
+
+            elif op.name == "dict_get":
+                # dict_get: inputs = DictType + key, output = value type
+                if len(op.inputs) != 2:
+                    self.errors.append("dict_get requires 2 inputs")
+                    continue
+                if len(op.outputs) != 1:
+                    self.errors.append("dict_get requires 1 output")
+                    continue
+
+                if not isinstance(op.inputs[0].type, DictType):
+                    self.errors.append("dict_get input 0 must be DictType")
+
+            elif op.name == "dict_set":
+                # dict_set: inputs = DictType + key + value, output = DictType
+                if len(op.inputs) != 3:
+                    self.errors.append("dict_set requires 3 inputs")
+                    continue
+                if len(op.outputs) != 1:
+                    self.errors.append("dict_set requires 1 output")
+                    continue
+
+                if not isinstance(op.inputs[0].type, DictType):
+                    self.errors.append("dict_set input 0 must be DictType")
+
+                output = op.outputs[0]
+                if not isinstance(output.type, DictType):
+                    self.errors.append("dict_set output must be DictType")
+
+            elif op.name == "dict_size":
+                # dict_size: input = DictType, output = ScalarType int32
+                if len(op.inputs) != 1:
+                    self.errors.append("dict_size requires 1 input")
+                    continue
+                if len(op.outputs) != 1:
+                    self.errors.append("dict_size requires 1 output")
+                    continue
+
+                if not isinstance(op.inputs[0].type, DictType):
+                    self.errors.append("dict_size input must be DictType")
+
+                output = op.outputs[0]
+                if not isinstance(output.type, ScalarType):
+                    self.errors.append("dict_size output must be ScalarType")
 
     def _check_devices(self) -> None:
         """Check device validity."""
